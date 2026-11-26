@@ -74,12 +74,13 @@ class Advice:
 
 
 class GrokAdviser:
-    def __init__(self, client, role, session, policy, *, clock=lambda: datetime.now(UTC)):
+    def __init__(self, client, role, session, policy, *, clock=lambda: datetime.now(UTC), compact=False):
         if role not in {e.value for e in EngineId} | {MASTER}:
             raise ValueError("Explicit adviser role required")
         _identity(session)
         _identity(policy)
         self.client, self.role, self.session, self.policy = client, role, session, policy
+        self.compact = compact
         self._clock, self._lock, self._sequence = clock, Lock(), 0
 
     def review(self, candidates, *, evidence):
@@ -111,7 +112,7 @@ class GrokAdviser:
                           "request_id": {"type": "string", "const": request_id},
                           "selected_ids": {"type": "array", "maxItems": 2, "items": {
                               "type": "string", "enum": [c.candidate_id for c in candidates]}},
-                          "reason": {"type": "string", "maxLength": 1000}}}
+                          "reason": {"type": "string", "maxLength": 240 if self.compact else 1000}}}
             instruction = (
                 f"You are Atlas's {self.role} Grok PAPER adviser. Rank at most two supplied candidate IDs. "
                 "Select none when evidence is insufficient. Use executable net economics, exposure, "
@@ -121,11 +122,17 @@ class GrokAdviser:
                 "Return request_id, selected_ids and reason. You cannot change candidate parameters, "
                 "risk limits, code or ownership. Selection is advisory; the controller revalidates orders."
             )
+            if self.compact:
+                instruction += (' Perform the engine-specific review and final account selection together. '
+                    'Warrior evaluates momentum pullbacks and extension; Quick Scalper evaluates short-duration '
+                    'support and cent-target economics. Keep their ownership and holding plans separate. '
+                    'Columnar candle rows preserve the original fields and provider timestamps. '
+                    'Return a concise reason of at most 240 characters; do not narrate analysis.')
             result = self.client.request(self.role, instruction, context, schema)
             valid = (isinstance(result, dict) and set(result) == {"request_id", "selected_ids", "reason"}
                      and result["request_id"] == request_id and isinstance(result["selected_ids"], list)
                      and len(result["selected_ids"]) <= 2 and isinstance(result["reason"], str)
-                     and len(result["reason"]) <= 1000)
+                     and len(result["reason"]) <= (240 if self.compact else 1000))
             if not valid:
                 raise GrokUnavailable("GROK_INVALID_ADVICE")
             ids = result["selected_ids"]
@@ -144,14 +151,32 @@ class GrokAdviser:
 
 class GrokSuite:
     """Shared provider and explicit engine-to-master handoff; no trading threads."""
-    def __init__(self, client, *, clock=lambda: datetime.now(UTC)):
+    def __init__(self, client, *, clock=lambda: datetime.now(UTC), single_pass=False):
         session = uuid4().hex
         self.client = client
-        self.crypto = GrokProposalProvider(client)
+        self.single_pass = single_pass
+        self.crypto = GrokProposalProvider(client, compact=single_pass)
         self.engines = {engine: GrokAdviser(client, engine.value, session, PROTOCOL, clock=clock)
                         for engine in EngineId}
-        self.master = GrokAdviser(client, MASTER, session, PROTOCOL, clock=clock)
+        self.master = GrokAdviser(client, MASTER, session, PROTOCOL, clock=clock, compact=single_pass)
         self._lock, self._latest, self._clock = Lock(), {}, clock
+
+    def review_batch(self,candidates,*,engine_evidence,account_evidence):
+        """One explicitly configured pilot call; no reuse of prior engine advice."""
+        if not self.single_pass:raise ValueError('Explicit single-pass suite required')
+        candidates=tuple(candidates)
+        with self._lock:self._latest.clear()
+        evidence={}
+        for role,values in engine_evidence.items():
+            originals=[json.loads(c.evidence_json) for c in candidates if c.engine.value==role]
+            if not isinstance(values,dict) or not originals:
+                evidence[role]=values;continue
+            encode=lambda value:json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
+            repeated=[key for key,value in values.items() if all(key in o and encode(o[key])==encode(value) for o in originals)]
+            evidence[role]={'additional_evidence':{k:v for k,v in values.items() if k not in repeated},
+                            'facts_already_in_candidates':sorted(repeated)}
+        return self.master.review(candidates,evidence={'account':account_evidence,
+            'native_engine_evidence':evidence,'review_mode':'COMBINED_NATIVE_ENGINE_AND_MASTER_V1'})
 
     def review(self, engine, candidates, *, evidence):
         adviser = self.engines[engine]

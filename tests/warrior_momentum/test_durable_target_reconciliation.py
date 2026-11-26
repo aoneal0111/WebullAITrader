@@ -130,6 +130,7 @@ def _harness(tmp_path: Path):
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: LIFECYCLE,
     )
@@ -691,6 +692,303 @@ def test_full_first_target_completion_advances_to_second_target(tmp_path):
         assert len(second) == 1
         assert second[0].remaining_quantity == D("1")
         assert second[0].request.limit_price == D("19.294980")
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_without_atomic_amender_tighter_stop_preserves_existing_protection(tmp_path, monkeypatch):
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        bridge.protection_amender = None
+        canceled = []
+        monkeypatch.setattr(
+            AutonomousPaperExecutionBridge, "_cancel_working_order",
+            lambda self, order: canceled.append(order.order_id) or False,
+        )
+        decision = bridge.ensure_exit("XRPN", 25, D("16.80"), "STOP", LIFECYCLE)
+        assert decision.failure_reason == PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+        assert stops[0].request.stop_price == D("16.57")
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_without_atomic_amender_quantity_repair_does_not_cancel_stop(tmp_path, monkeypatch):
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        bridge.protection_amender = None
+        canceled = []
+        monkeypatch.setattr(
+            AutonomousPaperExecutionBridge, "_cancel_working_order",
+            lambda self, order: canceled.append(order.order_id) or False,
+        )
+        position["XRPN"] = D("24")
+        assert bridge._reconcile_protective_quantity("XRPN", LIFECYCLE) is False
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_recovery_without_atomic_amender_does_not_cancel_mismatched_stop(tmp_path, monkeypatch):
+    """Recovery may report incomplete, but must not open a cancel-first gap."""
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        # Change the durable STOP quantity, not merely an external projected
+        # position source: recovery derives authoritative inventory from
+        # filled order history and would otherwise see no mismatch.
+        assert composition.gateway.amend_protective_stop(
+            original.order_id, 24, original.request.stop_price,
+        )
+        bridge.protection_amender = None
+        canceled = []
+        monkeypatch.setattr(
+            AutonomousPaperExecutionBridge, "_cancel_working_order",
+            lambda self, order: canceled.append(order.order_id) or False,
+        )
+        recovered = bridge.reconcile_protection()
+        assert "XRPN" not in recovered
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+        assert "XRPN" in bridge._management_incomplete
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_failed_target_submission_restores_stop_and_stays_incomplete(tmp_path, monkeypatch):
+    """The existing cancel-first bracket path must not claim completion on failure."""
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    original_place = bridge._place_exit
+    roles = []
+
+    def reject_first_target(self, symbol, qty, price, role, identity, **kwargs):
+        roles.append(role)
+        if role == "FIRST_TARGET":
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE,
+                symbol, identity, role,
+                failure_reason=PaperExitSubmissionFailureReason.GATEWAY_REJECTED,
+            )
+        return original_place(symbol, qty, price, role, identity, **kwargs)
+    monkeypatch.setattr(AutonomousPaperExecutionBridge, "_place_exit", reject_first_target)
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 23, D("18.427490"), "FIRST_TARGET", LIFECYCLE,
+        )
+        assert result.failure_reason == PaperExitSubmissionFailureReason.GATEWAY_REJECTED
+        assert roles == ["FIRST_TARGET", "STOP"]
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert int(stops[0].remaining_quantity) == 25
+        assert "XRPN" in bridge._management_incomplete
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_target_transition_currently_has_unprotected_cancel_first_window(tmp_path, monkeypatch):
+    """Characterize the outstanding non-atomic conversion before changing it."""
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    observed = []
+    original_place = bridge._place_exit
+
+    def observe_target(self, symbol, qty, price, role, identity, **kwargs):
+        if role == "FIRST_TARGET":
+            active_stops = [
+                o for o in _active_sells(composition)
+                if o.request.order_type.value == "STOP"
+            ]
+            observed.append(len(active_stops))
+        return original_place(symbol, qty, price, role, identity, **kwargs)
+
+    monkeypatch.setattr(AutonomousPaperExecutionBridge, "_place_exit", observe_target)
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 23, D("18.427490"), "FIRST_TARGET", LIFECYCLE,
+        )
+        assert result.request_succeeded
+        # The target is currently placed AFTER the original stop is canceled.
+        # This is a characterization of the known gap, not evidence of safety.
+        assert observed == [0]
+        assert len([o for o in _active_sells(composition)
+                    if o.request.order_type.value == "STOP"]) == 1
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_atomic_gateway_bracket_preserves_same_stop_identity_and_inventory(tmp_path):
+    from app.services.order_command_factory import OrderEntryCommand
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        prior_stop = next(
+            o for o in _active_sells(composition)
+            if o.request.order_type.value == "STOP"
+        )
+        request = bridge.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="XRPN", side="SELL", quantity=D("23"),
+                order_type="LIMIT", limit_price=D("18.427490"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id=LIFECYCLE,
+                metadata={"reason": "FIRST_TARGET"},
+            ),
+        )
+        ack = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert ack.accepted
+        active = _active_sells(composition)
+        stops = [o for o in active if o.request.order_type.value == "STOP"]
+        targets = [o for o in active if o.request.order_type.value == "LIMIT"]
+        assert len(stops) == len(targets) == 1
+        assert stops[0].order_id == prior_stop.order_id
+        assert stops[0].remaining_quantity == D("25")
+        assert stops[0].request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert stops[0].request.metadata["correlated_target_order_id"] == targets[0].order_id
+        assert targets[0].order_id == ack.broker_order_id
+        assert int(targets[0].remaining_quantity) == 23
+        second = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert not second.accepted
+        assert len(_active_sells(composition)) == 2
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_atomic_gateway_bracket_rejected_target_keeps_stop_unchanged(tmp_path):
+    from app.services.order_command_factory import OrderEntryCommand
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        prior_stop = next(
+            o for o in _active_sells(composition)
+            if o.request.order_type.value == "STOP"
+        )
+        request = bridge.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="XRPN", side="SELL", quantity=D("26"),
+                order_type="LIMIT", limit_price=D("18.427490"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id=LIFECYCLE,
+            ),
+        )
+        ack = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert not ack.accepted
+        assert _active_sells(composition) == (prior_stop,)
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_bridge_uses_atomic_gateway_stager_without_cancelling_stop(tmp_path, monkeypatch):
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    bridge.correlated_bracket_stager = (
+        composition.gateway.stage_correlated_target_with_stop
+    )
+    original = next(order for order in _active_sells(composition)
+                    if order.request.order_type.value == "STOP")
+    cancellations = []
+    monkeypatch.setattr(
+        AutonomousPaperExecutionBridge, "_cancel_working_order",
+        lambda self, order: cancellations.append(order.order_id) or False,
+    )
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 23, D("18.427490"), "FIRST_TARGET", LIFECYCLE,
+        )
+        assert result.request_succeeded
+        assert cancellations == []
+        stops = [order for order in _active_sells(composition)
+                 if order.request.order_type.value == "STOP"]
+        targets = [order for order in _active_sells(composition)
+                   if order.request.order_type.value == "LIMIT"]
+        assert len(stops) == len(targets) == 1
+        assert stops[0].order_id == original.order_id
+        assert stops[0].request.metadata["correlated_target_order_id"] == targets[0].order_id
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_atomic_durable_failure_keeps_original_stop_and_creates_no_target(tmp_path):
+    import pytest
+    from app.paper_gateway.gateway import PaperDurabilityError
+    from app.services.order_command_factory import OrderEntryCommand
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        request = bridge.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="XRPN", side="SELL", quantity=D("23"),
+                order_type="LIMIT", limit_price=D("18.427490"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id=LIFECYCLE,
+            ),
+        )
+        class FailedDurability:
+            account_id = composition.account_id
+
+            def persist_batch(self, *args, **kwargs):
+                raise OSError("synthetic write failure")
+
+        composition.gateway._durable_store = FailedDurability()
+        with pytest.raises(PaperDurabilityError):
+            composition.gateway.stage_correlated_target_with_stop(
+                original.order_id, request, original.request.stop_price,
+            )
+        assert composition.gateway.durability_failed
+        assert _active_sells(composition) == (original,)
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_atomic_bridge_preserves_market_profit_harvest_order_type(tmp_path):
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    bridge.correlated_bracket_stager = (
+        composition.gateway.stage_correlated_target_with_stop
+    )
+    original = next(order for order in _active_sells(composition)
+                    if order.request.order_type.value == "STOP")
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 5, D("18.50"), "PROFIT_HARVEST_1", LIFECYCLE,
+        )
+        assert result.request_succeeded
+        markets = [order for order in _active_sells(composition)
+                   if order.request.order_type.value == "MARKET"]
+        stops = [order for order in _active_sells(composition)
+                 if order.request.order_type.value == "STOP"]
+        assert len(markets) == len(stops) == 1
+        assert markets[0].remaining_quantity == D("5")
+        assert stops[0].order_id == original.order_id
+        assert stops[0].request.metadata["correlated_target_order_id"] == markets[0].order_id
     finally:
         writer.close()
         composition.close()

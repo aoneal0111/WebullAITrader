@@ -1,4 +1,4 @@
-"""Atlas multi-strategy discovery: bounded, pure, and research-only."""
+"""Atlas multi-strategy discovery: pure rules with an explicit PAPER execution seam."""
 
 from .context import build_impulse, build_pullback, build_reference_levels, structural_anchor
 from .capabilities import feature_capability_report

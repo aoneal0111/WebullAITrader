@@ -214,7 +214,11 @@ def test_slow_intelligence_worker_cannot_block_treatment_lookup(tmp_path) -> Non
         _candidate, signal = service.observe(forming, account=account())
         elapsed_ms = (monotonic() - started) * 1000.0
         assert signal is None
-        assert elapsed_ms < 10.0
+        # Prove lookup returned while the callback is still blocked. A 10ms
+        # wall-clock bound measured scheduler/SQLite jitter on shared runners;
+        # 100ms still detects waiting for the callback's two-second timeout.
+        assert not release.is_set()
+        assert elapsed_ms < 100.0
     finally:
         release.set()
         service.close_intelligence_worker(timeout_seconds=2.0)

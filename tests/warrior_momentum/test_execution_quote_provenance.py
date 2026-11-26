@@ -60,9 +60,9 @@ def _source(row: dict[str, object], *, sink=NOOP_EXECUTION_QUOTE_PROVENANCE):
     return source, market_data
 
 
-def _row(*, last_age: float = 0.560351, quote_age: float = 16.567351):
+def _row(*, last_age: float = 0.560351, quote_age: float = 16.567351, symbol: str = "CABO"):
     return {
-        "symbol": "CABO",
+        "symbol": symbol,
         "price": "13.20",
         "bid": "13.08",
         "ask": "13.21",
@@ -148,7 +148,7 @@ def test_raw_and_parsed_fields_are_allowlisted_and_correlated(tmp_path) -> None:
 
 def test_cabo_stale_bid_rejection_is_unchanged_and_captured(tmp_path) -> None:
     sink = JsonlExecutionQuoteProvenanceSink(tmp_path, "cabo-stale")
-    source, market_data = _source(_row(), sink=sink)
+    source, market_data = _source(_row(symbol="XYZ"), sink=sink)
 
     candidate, signal = evaluate(tmp_path / "runtime", source)
 
@@ -172,7 +172,7 @@ def test_cabo_stale_bid_rejection_is_unchanged_and_captured(tmp_path) -> None:
 
 def test_fresh_quote_acceptance_is_unchanged_and_captured(tmp_path) -> None:
     sink = JsonlExecutionQuoteProvenanceSink(tmp_path, "fresh")
-    source, market_data = _source(_row(last_age=1, quote_age=1), sink=sink)
+    source, market_data = _source(_row(last_age=1, quote_age=1, symbol="XYZ"), sink=sink)
 
     candidate, signal = evaluate(tmp_path / "runtime", source)
 
@@ -186,7 +186,7 @@ def test_fresh_quote_acceptance_is_unchanged_and_captured(tmp_path) -> None:
 
 def test_malformed_snapshot_remains_unavailable(tmp_path) -> None:
     sink = JsonlExecutionQuoteProvenanceSink(tmp_path, "malformed")
-    malformed = _row()
+    malformed = _row(symbol="XYZ")
     malformed.pop("quote_time")
     source, market_data = _source(malformed, sink=sink)
 
@@ -201,7 +201,7 @@ def test_malformed_snapshot_remains_unavailable(tmp_path) -> None:
 
 
 def test_observability_failure_cannot_change_snapshot_or_request_count(tmp_path) -> None:
-    source, market_data = _source(_row(last_age=1, quote_age=1), sink=_ThrowingSink())
+    source, market_data = _source(_row(last_age=1, quote_age=1, symbol="XYZ"), sink=_ThrowingSink())
 
     candidate, signal = evaluate(tmp_path / "runtime", source)
 

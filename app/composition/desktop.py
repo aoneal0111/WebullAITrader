@@ -1,5 +1,8 @@
 from __future__ import annotations
+from app.asset_modules.paper_profiles import GROK_CONTROL_PROFILES
 
+import logging
+from time import monotonic
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -85,6 +88,17 @@ from .desktop_symbol_intelligence import (
 )
 
 
+def _composition_startup_phase(started: float, phase: str) -> None:
+    """Record payload-free startup checkpoints, never changing control flow."""
+    try:
+        logging.getLogger("atlas.startup").info(
+            "ATLAS_COMPOSITION_PHASE phase=%s elapsed_ms=%d",
+            phase, max(0, round((monotonic() - started) * 1000)),
+        )
+    except Exception:
+        pass
+
+
 def _configured_management_context_source(
     storage_path, configuration_fingerprint: str,
 ):
@@ -133,6 +147,8 @@ class DesktopComposition:
     daily_review_exporter: DailyReviewExporter | None = None
     paper_validation_capture: PaperValidationCapture | None = None
     learning_collector: object | None = None
+    daily_research: object | None = None
+    equity_paper_experiment: object | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         from .desktop_lifecycle import close_desktop_composition
@@ -154,9 +170,11 @@ def create_desktop_composition(
     paper_clock: Callable[[], datetime] | None = None,
     catalyst_providers: Sequence[object] = (),
     shadow_runtime_factory: Callable[..., SecShadowRuntimeComposition] = create_sec_shadow_runtime,
+    observer_context_tap: object | None = None,
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
+    _startup_started = monotonic()
     performance_diagnostics.start_run()
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
@@ -167,6 +185,19 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    from app.asset_modules.daily_research import configured_research
+    daily_research = configured_research(operational_configuration, configuration.runtime_mode, observer_context_tap)
+    if daily_research is not None:
+        observer_context_tap = daily_research.tap
+    if observer_context_tap is not None:
+        from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+        if (not isinstance(observer_context_tap,RuntimeContextTap)
+                or configuration.runtime_mode.value!='PAPER'
+                or operational_configuration.environment.value!='PAPER'
+                or operational_configuration.live_trading_enabled
+                or (operational_configuration.grok_paper_entries_enabled
+                    and (daily_research is None or daily_research.grok_execution is None))):
+            raise ValueError('Passive context capture requires explicit injection and safe PAPER flags')
     from app.composition.learning_collection import create_learning_collector
     learning_collector = create_learning_collector(operational_configuration,
         configuration.runtime_mode, paper_persistence_path=paper_persistence_path)
@@ -177,9 +208,26 @@ def create_desktop_composition(
     )
     warrior_observability = intelligence_composition.warrior_observability
     warrior_strategy_config = intelligence_composition.warrior_strategy_config
+    from app.equity_overhaul.paper_experiment import configured as configured_equity_experiment
+    equity_experiment = configured_equity_experiment(operational_configuration, configuration.runtime_mode.value)
+    if equity_experiment is not None:
+        if daily_research is None:raise ValueError('EXPERIMENT_RECORDING_NOT_AVAILABLE')
+        def capture_ready():
+            status=daily_research.journal.status()
+            return status['writer_alive'] and status['evidence_complete'] and not status['closed']
+        equity_experiment.capture_ready=capture_ready
+        if not equity_experiment.account_sizing:
+            warrior_strategy_config = replace(warrior_strategy_config, risk=replace(warrior_strategy_config.risk,
+                configured_per_trade_risk=min(warrior_strategy_config.risk.configured_per_trade_risk, Decimal('1')),
+                maximum_quantity=min(warrior_strategy_config.risk.maximum_quantity, 10),
+                maximum_position_dollars=min(warrior_strategy_config.risk.maximum_position_dollars, Decimal('100'))))
+        warrior_strategy_config = equity_experiment.warrior_config(warrior_strategy_config)
     warrior_configuration_fingerprint = strategy_configuration_fingerprint(
         warrior_strategy_config
     )
+    if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES:
+        from hashlib import sha256
+        warrior_configuration_fingerprint=sha256((equity_experiment.spec['profile']+'|'+warrior_configuration_fingerprint).encode()).hexdigest()
     warrior_management_context_source = _configured_management_context_source(
         operational_configuration.warrior_forward_capture_path,
         warrior_configuration_fingerprint,
@@ -219,6 +267,7 @@ def create_desktop_composition(
     shared_rest_market_data = market_services.shared_rest_market_data
     chart_market_data_service = market_services.chart_market_data_service
     execution_quote_source = market_services.execution_quote_source
+    warrior_execution_quote_source = execution_quote_source
 
 
     paper_trading_commands = None
@@ -245,7 +294,17 @@ def create_desktop_composition(
     market_event_observer = None
     warrior_forward_sidecar = None
     if placement_runtime is None:
+        from app.asset_modules.native_fill_funnel import NativeFillFunnel
+        native_fill_funnel = NativeFillFunnel(
+            lambda order_id: paper_order_book.get(order_id),
+            performance_diagnostics.record_entry_funnel,
+            started_at=(paper_clock or utc_now)(),
+            evidence_sink=daily_research.journal.submit if daily_research is not None else None,
+        )
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
+            native_fill_funnel.observe(event)
+            if daily_research is not None:
+                daily_research.journal.observe_paper_event(event)
             runtime_projections.sink(event)
             symbol = event.symbol
             if symbol is None:
@@ -279,6 +338,7 @@ def create_desktop_composition(
                 ),
                 strategy_lifecycle_id=lifecycle_id,
             )
+        _composition_startup_phase(_startup_started, "paper_gateway_create_started")
         paper_trading_commands = create_paper_trading_command_composition(
             order_book=paper_order_book,
             event_sink=paper_runtime_event_sink,
@@ -287,6 +347,7 @@ def create_desktop_composition(
             position_quantity_source=trading_state_sources.position_quantity,
             clock=paper_clock,
         )
+        _composition_startup_phase(_startup_started, "paper_gateway_created")
         if paper_trading_commands.durable_store is not None:
             # Keep durable cross-campaign history in SQLite.  The hot projection
             # restores only the active campaign so GUI refreshes never rebuild
@@ -294,6 +355,7 @@ def create_desktop_composition(
             runtime_projections.order_projection.reconcile_authoritative_orders(
                 paper_trading_commands.durable_store.orders()
             )
+        _composition_startup_phase(_startup_started, "paper_order_projection_restored")
         paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
         paper_campaign_holder["capital"] = (
             paper_trading_commands.durable_store.active_campaign_capital()
@@ -312,6 +374,16 @@ def create_desktop_composition(
         )
 
 
+    # A single desktop dispatch boundary covers Warrior, Scalper, controller,
+    # prepared AI dispatch and add-ons even when optional controller flags vary.
+    from app.equity_overhaul.admission import engine_owner, production_policy, QualifiedEquityTradingService
+    equity_qualification = equity_experiment if equity_experiment is not None else production_policy()
+    qualified_equity_service = None
+    if paper_trading_commands is not None:
+        qualified_equity_service = QualifiedEquityTradingService(
+            paper_trading_commands.trading_service, equity_qualification)
+        paper_trading_commands = replace(paper_trading_commands, trading_service=qualified_equity_service)
+
     autonomous_paper_bridge = None
     paper_controller_service = None
     quick_scalper_runtime = None
@@ -329,13 +401,18 @@ def create_desktop_composition(
             order_book=paper_trading_commands.order_book,
             durable_store=paper_trading_commands.durable_store,
             protection_amender=paper_trading_commands.gateway.amend_protective_stop,
+            correlated_bracket_stager=paper_trading_commands.gateway.stage_correlated_target_with_stop,
             position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=warrior_management_context_source,
+            entry_qualification=lambda signal: equity_qualification.permits(
+                {**autonomous_paper_bridge._strategy_metadata(signal),
+                 'strategy_owner': engine_owner(signal)}),
         )
         # Restore the read model from the authoritative PAPER order book before
         # any management/protection callbacks can observe a live quote.  The
         # bridge is deliberately held in reconciliation until this seed is
         # complete.
+        _composition_startup_phase(_startup_started, "position_reconciliation_started")
         restored_paper_orders = paper_trading_commands.order_book.history()
         runtime_projections.position_projection.reconcile_from_paper_orders(
             restored_paper_orders,
@@ -345,7 +422,24 @@ def create_desktop_composition(
         )
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
+        quarantine_ok = qualified_equity_service.quarantine_working_buys(
+            paper_trading_commands.order_book, paper_trading_commands.order_command_factory)
         autonomous_paper_bridge.reconcile_protection()
+        _composition_startup_phase(_startup_started, "protection_reconciliation_completed")
+        if not quarantine_ok:
+            paper_trading_commands.close()
+            raise RuntimeError("Unqualified working BUY cancellation is unconfirmed; desktop startup stopped")
+        scalper_execution_quote_source=execution_quote_source
+        if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy'):
+            from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource, WarriorPaperStreamQuoteSource
+            scalper_execution_quote_source=PaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
+            warrior_execution_quote_source = WarriorPaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
+            original_market_observer=market_event_observer
+            def observe_paper_market(event):
+                scalper_execution_quote_source.observe_market_event(event)
+                warrior_execution_quote_source.observe_market_event(event)
+                return original_market_observer(event)
+            market_event_observer=observe_paper_market
         if operational_configuration.paper_controller_enabled:
             if not paper_environment or operational_configuration.live_trading_enabled:
                 raise ValueError("The entry controller is PAPER-only with live trading disabled")
@@ -353,20 +447,25 @@ def create_desktop_composition(
             paper_controller_service = attach_paper_controller(
                 paper_trading_commands, autonomous_paper_bridge,
                 account_source=trading_state_sources.warrior_account_context,
-                quote_source=execution_quote_source,
+                quote_source=warrior_execution_quote_source,
                 risk_config=warrior_strategy_config.risk,
+                native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES else 2),
                 clock=paper_clock,
+                native_scalper_future_tolerance_seconds=(.25 if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy') else 0),
+                scalper_quote_source=scalper_execution_quote_source,
             )
             paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
+        scalper_config = QuickScalperConfig(enabled=operational_configuration.quick_scalper_enabled)
+        if equity_experiment is not None:
+            scalper_config = equity_experiment.scalper_config(scalper_config)
         quick_scalper_runtime = QuickScalperPaperRuntimeAdapter(
-            config=QuickScalperConfig(
-                enabled=operational_configuration.quick_scalper_enabled,
-            ),
+            observer_context_tap=observer_context_tap,
+            config=scalper_config,
             bridge=autonomous_paper_bridge,
             order_book=paper_trading_commands.order_book,
             account_context_source=trading_state_sources.warrior_account_context,
             position_quantity_source=trading_state_sources.position_quantity,
-            execution_quote_source=execution_quote_source,
+            execution_quote_source=scalper_execution_quote_source,
             risk_config=warrior_strategy_config.risk,
             live_trading_enabled=operational_configuration.live_trading_enabled,
             environment=operational_configuration.environment.value,
@@ -384,10 +483,18 @@ def create_desktop_composition(
             "scalper": asdict(quick_scalper_runtime.config),
             "shared_warrior_configuration": warrior_configuration_fingerprint,
         }).encode()).hexdigest()
-        autonomous_paper_bridge.strategy_provenance_source = EquityPolicyAttribution({
+        attribution = EquityPolicyAttribution({
             "WARRIOR_MOMENTUM_V1": warrior_configuration_fingerprint,
             "QUICK_SCALPER": scalper_configuration,
         })
+        if equity_experiment is not None:
+            equity_experiment.bind(attribution)
+            def trial_attribution(signal):
+                return {**attribution(signal,native_only=equity_experiment.cent_early and not equity_experiment.warrior_library_enabled),
+                        'strategy_trial_id': equity_experiment.spec['trial_id']}
+            autonomous_paper_bridge.strategy_provenance_source = trial_attribution
+        else:
+            autonomous_paper_bridge.strategy_provenance_source = attribution
 
     entry_opportunity_value_observer = create_entry_opportunity_value_observer(
         operational_configuration=operational_configuration,
@@ -429,7 +536,7 @@ def create_desktop_composition(
             None if autonomous_paper_bridge is None
             else autonomous_paper_bridge.has_working_entry
         ),
-        execution_quote_source=execution_quote_source,
+        execution_quote_source=warrior_execution_quote_source,
         order_flow_client=shared_rest_market_data,
         research_observer=trade_intelligence_observer,
         entry_value_observer=entry_opportunity_value_observer,
@@ -442,11 +549,15 @@ def create_desktop_composition(
         decision_intelligence_observer=decision_intelligence_observer,
         paper_entry_intelligence=paper_entry_intelligence,
         quick_scalper_observer=quick_scalper_runtime,
+        observer_context_tap=observer_context_tap,
         strategy_ownership=shared_strategy_ownership,
         async_observation_records=True,
         async_decision_intelligence=True,
         observability=warrior_observability,
     )
+    from app.asset_modules.grok_warrior_control import bind as bind_warrior_control
+    bind_warrior_control(warrior_forward_sidecar,autonomous_paper_bridge,paper_controller_service,
+        equity_experiment,shared_strategy_ownership,operational_configuration,clock=paper_clock or utc_now)
     if grok_suite is not None:
         bind_grok_paper_entries(warrior_forward_sidecar, grok_suite, paper_controller_service,
             autonomous_paper_bridge, clock=paper_clock or utc_now)
@@ -454,6 +565,7 @@ def create_desktop_composition(
         warrior_forward_sidecar.restore_execution_lifecycles(
             paper_trading_commands.order_book.history()
         )
+        _composition_startup_phase(_startup_started, "warrior_lifecycle_restore_completed")
 
     adaptive_entry_research_observer = create_adaptive_entry_research_observer(
         operational_configuration=operational_configuration,
@@ -498,6 +610,12 @@ def create_desktop_composition(
             async_warrior_observation=True,
         )
 
+    if daily_research is not None:
+        from app.asset_modules.daily_research_journal import RecordingMarketObserver
+        market_event_observer = RecordingMarketObserver(
+            market_event_observer, daily_research.journal,
+        )
+
     # Markets are activated explicitly from the desktop market controls.
 
     # D2B1 consumes the existing D1 predicate.  Repository opening is local;
@@ -527,8 +645,10 @@ def create_desktop_composition(
         symbol_intelligence=symbol_intelligence,
         memory_observability=memory_observability,
     )
-    if paper_controller_service is not None:
-        trading_service = paper_controller_service
+    if paper_trading_commands is not None:
+        trading_service = paper_trading_commands.trading_service
+    elif configuration.runtime_mode.value == "PAPER":
+        trading_service = QualifiedEquityTradingService(trading_service, equity_qualification)
 
     result = DesktopComposition(
         learning_collector=learning_collector,
@@ -544,6 +664,8 @@ def create_desktop_composition(
             else paper_trading_commands.execution_engine
         ),
         paper_trading_commands=paper_trading_commands,
+        daily_research=daily_research,
+        equity_paper_experiment=equity_experiment,
         runtime_projections=runtime_projections,
         chart_market_data_service=chart_market_data_service,
         chart_default_symbol=chart_default_symbol,
@@ -575,6 +697,8 @@ def create_desktop_composition(
             ),
         ),
     )
+    if daily_research is not None:
+        daily_research.bind_baseline(result)
     result.symbol_intelligence_activation_state = (
         start_desktop_symbol_intelligence(symbol_intelligence_bundle)
     )

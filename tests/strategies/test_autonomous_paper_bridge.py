@@ -1023,7 +1023,7 @@ def test_reconciliation_barrier_and_contradiction_fail_closed(tmp_path) -> None:
 
 
 def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     path = tmp_path / "active-lifecycle-conflict.sqlite3"
     position = {"PMI": Decimal("0")}
@@ -1084,9 +1084,14 @@ def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
         management_context_source=lambda _symbol: "trade-b",
     )
     before_history = tuple(second.order_book.history())
-    before_events = len(
-        performance_diagnostics.reconciliation_metrics()["protection_events"]
-    )
+    # Capture this reconciliation directly: the global diagnostic ring may
+    # already be full when this test follows the complete forward-runtime suite.
+    events = []
+    original_record = performance_diagnostics.record_protection_event
+    def record_protection(**values):
+        events.append(values)
+        return original_record(**values)
+    monkeypatch.setattr(performance_diagnostics, "record_protection_event", record_protection)
     try:
         assert recovered.reconcile() is AutonomousPaperReadiness.BLOCKED
         result = recovered.ensure_exit(
@@ -1105,9 +1110,6 @@ def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
             order.request.execution_reason == "FIRST_TARGET"
             for order in second.order_book.history()
         )
-        events = performance_diagnostics.reconciliation_metrics()[
-            "protection_events"
-        ][before_events:]
         assert any(
             event["state"] == "ACTIVE_LIFECYCLE_CONFLICT"
             and event["reason"] == "ACTIVE_ENTRY_LIFECYCLE_MISMATCH"
@@ -1362,8 +1364,10 @@ def test_missing_first_target_is_recreated_for_incremental_ncnA_and_xrpn_positio
             composition.close()
 
 
+@pytest.mark.parametrize('role,target_quantity,kind', [
+    ('RUNNER_TARGET', 100, 'LIMIT'), ('PROFIT_HARVEST_1', 50, 'MARKET')])
 def test_full_runner_target_retains_contingent_stop_through_partial_fill_and_restart(
-    tmp_path,
+    tmp_path, role, target_quantity, kind,
 ):
     position = {"PMI": Decimal("0")}
     path = tmp_path / "runner-bracket.sqlite3"
@@ -1390,21 +1394,22 @@ def test_full_runner_target_retains_contingent_stop_through_partial_fill_and_res
         position["PMI"] = Decimal("100")
         bridge.ensure_exit("PMI", 100, Decimal("9.5"), "STOP", "trade-a")
         target = bridge.ensure_exit(
-            "PMI", 100, Decimal("10.5"), "RUNNER_TARGET", "trade-a",
+            "PMI", target_quantity, Decimal("10.5"), role, "trade-a",
         )
+        assert composition.order_book.get(target.order_id).request.order_type.value == kind
         sells = composition.order_book.open_orders_for_symbol("PMI")
         stop = next(order for order in sells if order.request.order_type is OrderType.STOP)
         assert stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
         assert sum(
             order.remaining_quantity for order in sells
             if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
-        ) == Decimal("100")
+        ) == Decimal(target_quantity)
 
         reports = composition.gateway.process_market_event(MarketEvent(
             2, session_timestamp(2), "PMI", "runner-partial",
             MarketEventType.QUOTE,
             QuotePayload(
-                Decimal("10.5"), Decimal("10.51"),
+                Decimal("10.49") if kind == 'MARKET' else Decimal("10.5"), Decimal("10.51"),
                 Decimal("30"), Decimal("30"),
             ),
         ))

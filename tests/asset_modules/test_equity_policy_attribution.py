@@ -189,3 +189,14 @@ def test_dispatch_does_not_read_policy_sources(monkeypatch):
         raise AssertionError("Per-trade disk read")
     monkeypatch.setattr(Path, "read_bytes", forbid_read)
     assert p(a) == expected
+
+
+def test_scalper_stream_and_bar_setups_have_separate_policy_versions():
+    p = provider()
+    a = signal(EngineId.SCALPER)
+    a.setup_type = 'QUICK_SCALP_STREAM'
+    stream = p(a)
+    a.setup_type = 'QUICK_SCALP_MOMENTUM'
+    bar = p(a)
+    assert stream['strategy_family'] == 'QUICK_SCALP_STREAM'
+    assert stream['strategy_policy_version'] != bar['strategy_policy_version']

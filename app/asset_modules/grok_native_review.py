@@ -219,6 +219,22 @@ class NativeGrokReview:
                 self._grants.pop(key, None)
         return resolutions
 
+    def status(self):
+        # Project retained receipts and leases, without polling a worker,
+        # placing orders, touching a ledger or changing authorization.
+        handoff = self.handoff.snapshot()
+        states = self.pending_states()
+        now = self.clock()
+        with self._lock:
+            entries = [dict(candidate_id=key, symbol=entry.prepared.placement.order.symbol,
+                lifecycle_id=entry.prepared.candidate.lifecycle_id,
+                state=states.get(key, "RECEIPT_PENDING"),
+                valid_until=entry.prepared.candidate.valid_until.isoformat(),
+                authorization_current=(self._grants.get(key) is not None
+                    and self._grants[key].allows(now)))
+                for key, entry in self._entries.items()]
+        return dict(handoff=handoff, pending=entries)
+
     def pending_states(self):
         states = self.handoff.entry_states()
         with self._lock:

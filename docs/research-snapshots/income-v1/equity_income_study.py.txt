@@ -1,0 +1,152 @@
+"""Daily ETF proxy extension of the frozen income screen. No execution authority."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
+from hashlib import sha256
+import json
+from pathlib import Path
+from urllib.request import Request,urlopen
+import numpy as np
+import pandas as pd
+from app.strategy_lab.daily_income_lab import Spec,engine,features,grid,metrics,signals,write
+
+SYMBOLS=('SPY','QQQ','IWM','DIA','XLK','XLF','XLE','XLI','XLP','XLU','GLD','TLT')
+
+
+def prepare(root):
+    root=Path(root);root.mkdir(exist_ok=False,parents=True)
+    p=dict(scope='FROZEN_ETF_DAILY_INCOME_PROXY_V1',symbols=list(SYMBOLS),specs=[asdict(s) for s in grid()],
+       development=['2022-01-01','2024-01-01'],validation=['2024-01-01','2025-01-01'],
+       assessment=['2025-01-01','2025-05-01'],fees_per_side=[.0005,.001],slippage_per_side=.0005,
+       capital_scenarios=[10000.,25000.,50000.,100000.],target_per_calendar_day=100.,
+       overhead_per_calendar_day_assumption=2.,slots=6,selection_count=16,
+       implementation_sha256={n:sha256((Path(__file__).parent/n).read_bytes()).hexdigest()
+                               for n in ('daily_income_lab.py','equity_income_study.py')},
+       qualification_eligible=False,source_faithful=False,
+       limitations=['Yahoo daily OHLC public research proxy, not SIP or broker data',
+          'Fixed surviving ETF universe; no historical universe reconstruction',
+          'Fractional shares modeled; no broker precision or queue simulation',
+          'Dividends not credited; no assumption of dividend-adjusted executable prices',
+          'Prior periods have been seen in other research; not a pristine holdout',
+          'Signals on completed daily candles execute next available SPY trading session open',
+          'Hold values interpreted as 1, 3 or 7 trading sessions; no intraday income inference'])
+    write(root/'protocol.json',p)
+    write(root/'protocol-lock.json',dict(sha256=sha256((root/'protocol.json').read_bytes()).hexdigest()))
+    data=root/'data';data.mkdir()
+    def one(symbol):
+        url=f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1=1262304000&period2=1746057600&interval=1d&events=div%2Csplits'
+        with urlopen(Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=45) as response:
+            raw=response.read(5*1024*1024+1)
+        if len(raw)>5*1024*1024:raise ValueError('BOUNDED_PUBLIC_RESPONSE_REQUIRED')
+        item=json.loads(raw)['chart']['result'][0];q=item['indicators']['quote'][0]
+        f=pd.DataFrame(dict(date=pd.to_datetime(item['timestamp'],unit='s',utc=True).normalize(),**q))
+        f=f[['date','open','high','low','close','volume']].dropna()
+        if f.date.duplicated().any() or not f.date.is_monotonic_increasing:raise ValueError('CLEAN_DAILY_HISTORY_REQUIRED')
+        if f.date.min()>pd.Timestamp('2011-01-01',tz='UTC') or f.date.max()<pd.Timestamp('2025-04-30',tz='UTC'):
+            raise ValueError('ALL_PERIODS_AND_WARMUP_REQUIRED')
+        (data/(symbol+'.json')).write_bytes(raw)
+        f.to_feather(data/(symbol+'.feather'))
+        return dict(symbol=symbol,url=url,raw_sha256=sha256(raw).hexdigest(),
+            feather_sha256=sha256((data/(symbol+'.feather')).read_bytes()).hexdigest(),
+            rows=len(f),start=str(f.date.min()),end=str(f.date.max()))
+    with ThreadPoolExecutor(max_workers=3) as pool:manifest=list(pool.map(one,SYMBOLS))
+    write(root/'data-lock.json',manifest)
+    return p
+
+
+def load(root):
+    root=Path(root);raw=(root/'protocol.json').read_bytes();p=json.loads(raw)
+    if sha256(raw).hexdigest()!=json.loads((root/'protocol-lock.json').read_text())['sha256']:
+        raise ValueError('FROZEN_PROTOCOL_CHANGED')
+    if any(sha256((Path(__file__).parent/n).read_bytes()).hexdigest()!=h for n,h in p['implementation_sha256'].items()):
+        raise ValueError('FROZEN_IMPLEMENTATION_CHANGED')
+    frames={}
+    for item in json.loads((root/'data-lock.json').read_text()):
+        path=root/'data'/(item['symbol']+'.feather')
+        if sha256(path.read_bytes()).hexdigest()!=item['feather_sha256']:raise ValueError('FROZEN_DATA_CHANGED')
+        f=features(pd.read_feather(path));f['eligible']=f.index>=1200
+        frames[item['symbol']]=f
+    return p,frames
+
+
+def pack(frames,p,period,spec):
+    start,end=[pd.Timestamp(d,tz='UTC') for d in p[period]]
+    dates=pd.DatetimeIndex(frames['SPY'].date)
+    dates=dates[(dates>=start)&(dates<end)]
+    symbols=sorted(frames);n,m=len(dates),len(symbols)
+    values=np.full((n,m,5),np.nan);atr=np.full((n,m),np.nan)
+    buy=np.zeros((n,m),dtype=bool);sell=buy.copy()
+    for j,symbol in enumerate(symbols):
+        f=frames[symbol];b,s=signals(f,spec);f=f.copy();f['buy']=b;f['sell']=s
+        f=f.set_index('date').reindex(dates)
+        values[:,j]=f[['open','high','low','close','volume']].to_numpy()
+        atr[:,j]=f.atr.to_numpy();buy[:,j]=f.buy.fillna(False).to_numpy();sell[:,j]=f.sell.fillna(False).to_numpy()
+    day_ids=((dates-start).total_seconds()//86400).astype(np.int64).to_numpy()
+    return values,atr,buy,sell,day_ids,int((end-start).days)
+
+
+def simulate(packed,spec,p,capital,fee,slip=None):
+    result=engine(*packed,capital,fee,p['slippage_per_side'] if slip is None else slip,p['slots'],
+                  spec.stop_atr,spec.target_atr,max(1,spec.hold_hours//24))
+    # Keep equity marked through weekends/holidays; overhead still applies every day.
+    stats,equity,realized,entries=result
+    present=set(packed[4].tolist());prior=capital
+    for i in range(len(equity)):
+        if i in present or i==len(equity)-1:prior=equity[i]
+        else:equity[i]=prior
+    return stats,equity,realized,entries
+
+
+def run(root,stage):
+    root=Path(root);p,frames=load(root)
+    if (root/(stage+'.json')).exists():raise ValueError('FRESH_RESULTS_REQUIRED')
+    if stage=='development':specs=[Spec(**s) for s in p['specs']]
+    else:specs=[Spec(**s['spec']) for s in json.loads((root/'selection.json').read_text())['selected']]
+    rows=[];last=None;packed=None
+    for index,spec in enumerate(specs):
+        key=(spec.family,spec.trigger)
+        if key!=last:packed=pack(frames,p,stage,spec);last=key
+        for fee in p['fees_per_side']:
+            for capital in ([10000.] if stage=='development' else p['capital_scenarios']):
+                result=simulate(packed,spec,p,capital,fee)
+                r=metrics(result,capital,p['overhead_per_calendar_day_assumption'],p['target_per_calendar_day'])
+                sessions=len(set(packed[4].tolist()))
+                r.update(trading_sessions=sessions,average_net_per_trading_session=r['terminal_net_after_overhead']/sessions)
+                rows.append(dict(name=spec.name,spec=asdict(spec),timeframe='1d',fee_per_side=fee,**r))
+                if stage!='development':
+                    folder=root/'daily';folder.mkdir(exist_ok=True)
+                    np.savez_compressed(folder/(stage+'-'+spec.name+'-'+str(fee)+'-'+str(capital)+'.npz'),
+                        equity=result[1],realized=result[2],entries=result[3])
+        if (index+1)%24==0 or index+1==len(specs):
+            write(root/(stage+'.json'),dict(stage=stage,configurations_completed=index+1,runs=len(rows),rows=rows,orders=0))
+            print('ETF_INCOME_SCREEN',stage,'CONFIGURATIONS',index+1,'RUNS',len(rows),flush=True)
+    if stage=='development':
+        groups={}
+        for r in rows:groups.setdefault(r['name'],[]).append(r)
+        ranked=[]
+        for group in groups.values():
+            r=group[0];valid=all(x['terminal_net_after_overhead']>0 and x['maximum_drawdown']<=.35 and x['closed_trades']>=30 for x in group)
+            ranked.append((valid,min(x['average_net_per_day'] for x in group),r))
+        ranked.sort(key=lambda x:(not x[0],-x[1],x[2]['name']))
+        chosen=[];counts={}
+        for valid,score,r in ranked:
+            family=r['spec']['family']
+            if counts.get(family,0)>=2:continue
+            chosen.append(dict(spec=r['spec'],development_robust_valid=valid,worst_fee_average_net_per_day=score))
+            counts[family]=counts.get(family,0)+1
+            if len(chosen)==p['selection_count']:break
+        with (root/'selection.json').open('x') as f:
+            json.dump(dict(selected=chosen,stage_used='development',later_periods_used=False),f,indent=2)
+    return rows
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--root',type=Path,required=True)
+    parser.add_argument('--prepare',action='store_true')
+    parser.add_argument('--stage',choices=['development','validation','assessment'])
+    args=parser.parse_args()
+    if args.prepare:prepare(args.root)
+    if args.stage:run(args.root,args.stage)
+
+
+if __name__=='__main__':main()

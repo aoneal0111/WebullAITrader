@@ -1,0 +1,63 @@
+{
+  "scope": "NFI_FORWARD_INTEGRATION_VALIDATION_V1",
+  "source_commit": "bbddbd94f97f3c14336387d2958183870891b951",
+  "native_runtime": "Freqtrade 2026.9 Python 3.13.17 Linux package; official Docker image check required during operator preparation; not yet executed on workstation",
+  "source_strategy_sha256": "80f824e879493babf42cb861d751aa077bcc475ccacf08ae62ebf7abd26eeb8f",
+  "historical_smoke": {
+    "pairs": [
+      "ADA/USDT",
+      "AVAX/USDT",
+      "BTC/USDT",
+      "DOGE/USDT",
+      "ETH/USDT",
+      "LINK/USDT",
+      "SOL/USDT",
+      "XRP/USDT"
+    ],
+    "start": "2024-01-01",
+    "end": "2024-02-01",
+    "closed_trades": 3,
+    "wins": 3,
+    "losses": 0,
+    "simulated_net_usdt": 111.14714524,
+    "archive_sha256": "585370965fb48c9c89f16f097ceef0c8a9ac816a8c660e39c7ca14f2a34834a0",
+    "exit_reasons": [
+      "exit_long_tc_u_2 ( 143 )",
+      "exit_long_quick_q_7 ( 41 )",
+      "exit_profit_long_tc_t_0_1_m ( 145 )"
+    ],
+    "network_disabled": true
+  },
+  "public_market_probe": {
+    "exchange": "kraken",
+    "stake_currency": "USD",
+    "selected_pairs": 40,
+    "representative_pairs": [
+      "BTC/USD",
+      "ETH/USD"
+    ],
+    "timeframes": [
+      "5m",
+      "15m",
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "completed_candles_each": 719,
+    "original_provider_timestamps_preserved": true,
+    "real_orders": 0
+  },
+  "limitations": [
+    "Eight-pair historical integration smoke, not reproduction of the 36-trade 88.9% run",
+    "Three trades do not establish a new reliable win rate",
+    "Historical metadata is a pinned post-period recording, not verified January 2024 execution rules",
+    "Kraken USD forward venue and current fees differ from Binance USDT historical replay",
+    "No native forward bot or Atlas GUI started on server; public preflight and offline simulations only"
+  ],
+  "validation_tests": {
+    "passed": 226,
+    "subtests_passed": 9,
+    "scope": "NFI integration, existing source replay/capture and Warrior account-control regression suites",
+    "forward_trading_started": false
+  }
+}

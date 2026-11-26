@@ -91,9 +91,10 @@ class PortfolioSummaryStrip(QWidget):
 
 
 def _value_tone(value: str) -> str:
+    if value in {'--', '—'}:return 'neutral'
     if value.startswith("+"):
         return "good"
-    if value.startswith("-"):
+    if value.startswith("-") or value.startswith("$-"):
         return "danger"
     return "neutral" if value in {"--", "$0.00", "0"} else "standard"
 

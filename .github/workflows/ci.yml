@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Superseded branch commits must not exhaust CI capacity while
+# the latest safety/regression checks are queued.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -16,6 +22,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          # Historical compatibility tests explicitly inspect old commits.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -36,14 +45,94 @@ jobs:
       - name: Compile application
         run: python -m compileall -q app main.py
 
+      - name: Smoke-test Atlas Fast test tier
+        shell: pwsh
+        run: |
+          ./tools/run-atlas-tests.ps1 -Tier Fast -PythonPath (Get-Command python).Source
+
+      - name: Validate Warrior source decision authorization provenance
+        run: python -m pytest -q tests/warrior_momentum/test_source_decision_provenance.py
+
+      - name: Validate Warrior authorization timing comparison
+        run: python -m pytest -q tests/trade_intelligence/test_capture_authorization_timing.py
+
+      - name: Validate evidence-complete Warrior capture selection
+        run: python -m pytest -q tests/trade_intelligence/test_capture_copy_selection.py
+
+      - name: Validate nine-trade Warrior entry and exit evidence joins
+        run: python -m pytest -q tests/trade_intelligence/test_capture_entry_exit_diagnosis.py
+
+      - name: Validate Warrior multi-capture profit evidence
+        run: python -m pytest -q tests/trade_intelligence/test_capture_profit_batch.py
+
+      - name: Validate NAUT observed-signal PAPER gateway replay
+        run: python -m pytest -q tests/warrior_momentum/test_naut_observed_signal_gateway_replay.py
+
+      - name: Validate Warrior momentum entry repair
+        run: |
+          python -m pytest -q \
+            tests/warrior_momentum/test_execution_quote_confirmation.py \
+            tests/warrior_momentum/test_durable_target_reconciliation.py \
+            tests/paper_gateway/test_durable_store.py \
+            tests/warrior_momentum/test_forward_capture.py \
+            tests/warrior_momentum/test_exit_request_acknowledgement.py \
+            tests/test_paper_position_protection_integrity.py \
+            tests/integration/test_quick_scalper_event_feedback.py \
+            tests/test_authorization.py \
+            tests/test_stream_connect_review.py \
+            tests/test_desktop_paper_order_execution.py \
+            tests/asset_modules/test_grok_request_diagnostics.py \
+            tests/asset_modules/test_grok_observer_session.py \
+            tests/warrior_momentum/test_paper_stream_quote.py \
+            tests/warrior_momentum/test_warrior_library_operation.py \
+            tests/asset_modules/test_paper_morning_status.py \
+            tests/strategy_research/test_warrior_native_timing_review.py \
+            tests/asset_modules/test_native_review_branches.py \
+            tests/asset_modules/test_controlled_paper_service.py
+
+      - name: Validate dynamic momentum research worker lifecycle
+        # Run the producer/consumer shutdown stress suite in its own process.
+        # A prior Linux segfault occurred in worker-thread GC while Qt GUI
+        # tests were loaded into the same interpreter.
+        run: python -X faulthandler -m pytest -q tests/dynamic_momentum_discovery
+
       - name: Run tests
-        run: python -m pytest -q
+        # All remaining tests are still collected and executed. The research
+        # worker suite is tested above, not silently skipped.
+        run: python -X faulthandler -m pytest -q --ignore=tests/dynamic_momentum_discovery
 
       - name: Check patch whitespace
         run: git diff --check
 
       - name: Verify generated state
         run: test -z "$(git status --porcelain)"
+
+  native-research:
+    name: Optional native crypto research tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install isolated native-research dependencies
+        run: |
+          # The research adapters reuse Atlas utilities, but their native
+          # provider versions must stay out of the desktop trading job.
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-native-income-research.txt
+          python -m pip install --no-deps .
+      - name: Test native research adapters
+        run: |
+          python -m pytest -q \
+            tests/strategy_lab/test_bollinger_paper_pilot.py \
+            tests/strategy_lab/test_crypto_parameter_checks.py \
+            tests/strategy_lab/test_kraken_public_transport.py \
+            tests/strategy_lab/test_nfi_readiness.py \
+            tests/strategy_lab/test_paper_candidate_addon.py
 
   docker:
     name: Docker build

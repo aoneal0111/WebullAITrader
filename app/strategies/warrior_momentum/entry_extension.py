@@ -79,3 +79,68 @@ def assess_entry_extension(
         vwap_extension, move_from(first_observation_price),
         move_from(forming_price), move_from(trigger_price), seconds,
     )
+
+# A new upward technical trigger must not reset the move already observed
+# during an initial breakout. This guard is PAPER-only at its call site.
+INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT = Decimal("3")
+
+
+def initial_breakout_move_exhausted(
+    *,
+    executable_ask: Decimal,
+    first_observation_price: Decimal | None,
+    setup_type: str,
+    catalyst_confirmed: bool = False,
+    relative_volume: Decimal | None = None,
+    velocity_1m: Decimal | None = None,
+    velocity_5m: Decimal | None = None,
+    acceleration: Decimal | None = None,
+    setup_score: Decimal | None = None,
+    first_observed_at: datetime | None = None,
+    evaluated_at: datetime | None = None,
+) -> bool:
+    """Identify exhausted initial breakouts, not strong catalyst-driven legs.
+
+    An extended initial breakout can continue only when independent current
+    momentum measurements are favorable. A catalyst flag alone (possibly
+    hours old) cannot excuse a late entry. The existing quote, structural,
+    reward/risk, and account gates remain mandatory after this check.
+    """
+    if setup_type not in {
+        "HIGH_OF_DAY_BREAKOUT", "FLAT_TOP_BREAKOUT", "MOMENTUM_ACCELERATION",
+    }:
+        return False
+    if (
+        first_observation_price is None
+        or not first_observation_price.is_finite()
+        or first_observation_price <= ZERO
+        or not executable_ask.is_finite()
+        or executable_ask <= ZERO
+    ):
+        return False
+    # The lifecycle cache is symbol-keyed, not one immutable setup episode.
+    # Never apply yesterday's first-observation anchor to today's breakout.
+    if first_observed_at is not None and evaluated_at is not None:
+        if (
+            first_observed_at.tzinfo is None
+            or evaluated_at.tzinfo is None
+            or first_observed_at.date() != evaluated_at.date()
+        ):
+            return False
+    move = (
+        (executable_ask - first_observation_price)
+        / first_observation_price * HUNDRED
+    )
+    if move <= INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT:
+        return False
+    # Explicit current momentum confluence supports a genuine second leg.
+    # Never equate a catalyst by itself with fresh price/volume confirmation.
+    confirmed_continuation = (
+        catalyst_confirmed
+        and relative_volume is not None and relative_volume >= Decimal("2")
+        and velocity_1m is not None and velocity_1m > ZERO
+        and velocity_5m is not None and velocity_5m > ZERO
+        and acceleration is not None and acceleration > ZERO
+        and setup_score is not None and setup_score >= Decimal("75")
+    )
+    return not confirmed_continuation

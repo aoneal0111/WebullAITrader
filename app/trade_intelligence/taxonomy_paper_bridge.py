@@ -25,6 +25,42 @@ class TaxonomyPaperExecutionBridge:
         self.discovery = MultiStrategyDiscoveryEngine()
         self.discovery._taxonomy_episodes.restore(recovery)
 
+    def select_paper_candidate(self, value, candidate, stale_after):
+        """Select implemented geometry, without claiming an order or cached quote.
+
+        Rule completion uses the native 90/65 triggered/forming score scale.
+        This is a setup score, never an estimated win probability. Selection
+        does not consume the episode: account, Grok or quote waits can retry
+        the same structural opportunity through the canonical order lifecycle.
+        """
+        from app.opportunity_discovery import DetectionState, normalize_detections
+        context, premarket = _discovery_context(value)
+        _record_premarket_context(value, premarket)
+        batch = self.discovery.observe(context)
+        # Re-evaluate only current detections; a previous DETECTED membership
+        # retained for research overlap history must never authorize a new buy.
+        current = normalize_detections(tuple(item for item in batch.lifecycle_detections
+            if item.state in {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                              DetectionState.STRENGTHENING}))
+        for opportunity in current:
+            scores = {item.strategy_id: Decimal('90') if item.state is DetectionState.DETECTED
+                      else Decimal('65') for item in opportunity.memberships}
+            result = self.adapter.adapt(opportunity, strategy_scores=scores,
+                observed_at=value.evaluation_timestamp or value.observation.timestamp,
+                freshness_max_age=timedelta(seconds=float(stale_after)),
+                freshness_authority=value.quote_provenance,
+                spread_percent=candidate.spread_percent, dollar_volume=candidate.dollar_volume,
+                claim_identity=False)
+            if result.candidate is not None and result.candidate.formation_state is DetectionState.DETECTED:
+                setup = result.candidate.as_warrior_setup()
+                performance_diagnostics.record_strategy_selection(symbol=candidate.symbol,
+                    strategies_evaluated=tuple(item.strategy_id for item in opportunity.memberships),
+                    selected_execution_strategy=setup.taxonomy_strategy_id,
+                    composition_outcome='CANONICAL_PAPER_CANDIDATE',
+                    execution_identity=result.candidate.execution_identity)
+                return replace(candidate, setup=setup)
+        return candidate
+
     def evaluate(self, value, legacy_candidate, legacy_signal, stale, runtime, stale_after):
         if stale:
             return None, None

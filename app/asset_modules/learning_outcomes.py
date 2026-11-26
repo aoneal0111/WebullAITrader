@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from app.asset_modules.engine_catalog import lifecycle_owner
-from app.trade_intelligence.knowledge.capture_profit_export import read_database, bounded_rows
+from app.read_only_sqlite import read_database, bounded_rows
 
 FIELDS = {"campaign", "engine", "lifecycle", "instrument", "policy_version",
           "opened_at", "closed_at", "quantity", "net_pnl", "recorded_fees",

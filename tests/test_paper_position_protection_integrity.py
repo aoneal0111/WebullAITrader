@@ -135,6 +135,7 @@ def test_real_paper_bridge_creates_and_resizes_correlated_stop(tmp_path: Path):
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
     )
     store = ForwardCaptureStore(tmp_path / "bridge-protection.sqlite3")
@@ -162,16 +163,20 @@ def test_real_paper_bridge_creates_and_resizes_correlated_stop(tmp_path: Path):
         ]
         assert len(stops) == 1 and stops[0].quantity == D("40")
 
+        # A projection saying 575 shares without any additional durable
+        # BUY fills is not authority to enlarge a protective SELL. The PAPER
+        # gateway must retain the proven 40-share STOP and refuse the
+        # unverified change instead of risking a naked short.
         position["XYZ"] = D("575")
-        assert service.reconcile_authoritative_protection("XYZ", NOW) is True
+        assert service.reconcile_authoritative_protection("XYZ", NOW) is False
         stops = [
             order for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
             and order.request.order_type.value == "STOP"
         ]
-        assert len(stops) == 1 and stops[0].quantity == D("575")
+        assert len(stops) == 1 and stops[0].quantity == D("40")
         assert all(
-            order.quantity <= position["XYZ"]
+            order.quantity <= D("40")
             for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
         )
@@ -189,6 +194,7 @@ def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: "previous-lifecycle",
     )
@@ -240,7 +246,9 @@ def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context
         assert len(stops) == 1
         events = performance_diagnostics.reconciliation_metrics()["protection_events"]
         assert any(item["state"] == "PROTECTION_SUBMIT_ACCEPTED" for item in events)
-        assert any(item["state"] == "PROTECTION_ALREADY_PRESENT" for item in events)
+        # An atomic STOP amendment is not a no-op "already present" case.
+        # Verify the durable tightened price, not an obsolete diagnostic.
+        assert stops[0].request.stop_price >= D("2.00")
     finally:
         writer.close()
         composition.close()
@@ -257,6 +265,7 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: lifecycle,
     )

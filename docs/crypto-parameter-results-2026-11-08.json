@@ -1,0 +1,1740 @@
+{
+  "scope": "NATIVE_CRYPTO_PARAMETER_RESEARCH_2026_11_08",
+  "protocol": {
+    "scope": "EXPLORATORY_NATIVE_CRYPTO_PARAMETER_PROTOCOL_V1",
+    "grid": [
+      {
+        "name": "E0Original",
+        "key": "e0",
+        "parameters": {},
+        "overlay": false,
+        "control": "original"
+      },
+      {
+        "name": "E0EntryControl",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": false,
+        "control": "entry"
+      },
+      {
+        "name": "RiskE0S2F5T15",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskE0S2F5T25",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskE0S2F10T15",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskE0S2F10T25",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.025
+      },
+      {
+        "name": "RiskE0S4F5T15",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskE0S4F5T25",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskE0S4F10T15",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskE0S4F10T25",
+        "key": "e0",
+        "parameters": {
+          "buy_ema_low": 0.98,
+          "buy_sma15_32": 0.98,
+          "buy_cti_32": -0.8,
+          "buy_rsi_fast": 50,
+          "buy_rsi_fast_32": 55
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.025
+      },
+      {
+        "name": "NASOSOriginal",
+        "key": "nasos",
+        "parameters": {},
+        "overlay": false,
+        "control": "original"
+      },
+      {
+        "name": "NASOSEntryControl",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": false,
+        "control": "entry"
+      },
+      {
+        "name": "RiskNASOSS2F5T15",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskNASOSS2F5T25",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskNASOSS2F10T15",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskNASOSS2F10T25",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.025
+      },
+      {
+        "name": "RiskNASOSS4F5T15",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskNASOSS4F5T25",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskNASOSS4F10T15",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskNASOSS4F10T25",
+        "key": "nasos",
+        "parameters": {
+          "low_offset": 0.99,
+          "low_offset_2": 0.98,
+          "ewo_high": 2.0,
+          "ewo_low": -12.0,
+          "rsi_buy": 65
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.025
+      },
+      {
+        "name": "BBOriginal",
+        "key": "bb",
+        "parameters": {},
+        "overlay": false,
+        "control": "original"
+      },
+      {
+        "name": "BBEntryControl",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": false,
+        "control": "entry"
+      },
+      {
+        "name": "RiskBBS2F5T15",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskBBS2F5T25",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskBBS2F10T15",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskBBS2F10T25",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.02,
+        "floor": 0.01,
+        "target": 0.025
+      },
+      {
+        "name": "RiskBBS4F5T15",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.015
+      },
+      {
+        "name": "RiskBBS4F5T25",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.005,
+        "target": 0.025
+      },
+      {
+        "name": "RiskBBS4F10T15",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.015
+      },
+      {
+        "name": "RiskBBS4F10T25",
+        "key": "bb",
+        "parameters": {
+          "buy_ema_low": 0.985,
+          "buy_ema_high_local_dip": 0.985,
+          "buy_rsi": 32,
+          "buy_rsi_local_dip": 32,
+          "buy_rsi_fast": 50
+        },
+        "overlay": true,
+        "stop": 0.04,
+        "floor": 0.01,
+        "target": 0.025
+      }
+    ],
+    "development": "20240101-20240301",
+    "validation": "20240301-20240501",
+    "holdout": "20250101-20250401",
+    "pairs": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT",
+      "XRP/USDT",
+      "DOGE/USDT",
+      "LINK/USDT"
+    ],
+    "fees_per_side": [
+      0.004,
+      0.008
+    ],
+    "wallet": 10000,
+    "max_slots": 6,
+    "selection_gate": {
+      "closed_win_rate": 0.6,
+      "profit_factor": 1.15,
+      "maximum_native_drawdown": 0.15,
+      "development_closed": 30,
+      "validation_closed": 20,
+      "positive_terminal_pnl": true
+    },
+    "exploratory": true,
+    "prior_2024_results_seen": true,
+    "qualification_eligible": false,
+    "limitations": [
+      "Binance USDT candles, not current Kraken USD execution",
+      "Post-period December 2025 metadata; historical execution rules unverified",
+      "No explicit slippage model; fees tested separately",
+      "Force exits excluded from closed win rate; terminal PnL still includes them",
+      "No promise of daily profit or future 60 percent wins"
+    ]
+  },
+  "reports": {
+    "development": {
+      "stage": "development",
+      "fee_per_side": 0.004,
+      "network_requests": 0,
+      "orders": 0,
+      "qualification_eligible": false,
+      "callback_audit": {
+        "callback_failures": 0,
+        "examples": [],
+        "result_valid": true
+      },
+      "strategies": {
+        "E0Original": {
+          "closed_trades": 5,
+          "wins": 4,
+          "closed_win_rate": 0.8,
+          "closed_net_usdt": 229.92275184,
+          "closed_profit_factor": 11.71320414172659,
+          "force_exit_count": 0,
+          "terminal_net_usdt": 229.92275184000002,
+          "native_drawdown": 0.002146162331999949,
+          "exits": {
+            "trailing_stop_loss": 5
+          }
+        },
+        "E0EntryControl": {
+          "closed_trades": 52,
+          "wins": 45,
+          "closed_win_rate": 0.8653846153846154,
+          "closed_net_usdt": 85.42359303,
+          "closed_profit_factor": 1.1071469883918474,
+          "force_exit_count": 2,
+          "terminal_net_usdt": -20.33286832999994,
+          "native_drawdown": 0.04928956510400003,
+          "exits": {
+            "sell_stoploss_deadfish": 7,
+            "trailing_stop_loss": 45,
+            "force_exit": 2
+          }
+        },
+        "RiskE0S2F5T15": {
+          "closed_trades": 100,
+          "wins": 48,
+          "closed_win_rate": 0.48,
+          "closed_net_usdt": -805.86494249,
+          "closed_profit_factor": 0.5307008340005276,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -805.86494249,
+          "native_drawdown": 0.08487350232900008,
+          "exits": {
+            "trailing_stop_loss": 71,
+            "roi": 15,
+            "stop_loss": 14
+          }
+        },
+        "RiskE0S2F5T25": {
+          "closed_trades": 100,
+          "wins": 45,
+          "closed_win_rate": 0.45,
+          "closed_net_usdt": -891.91808805,
+          "closed_profit_factor": 0.5014125243662194,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -891.9180880499999,
+          "native_drawdown": 0.09351576136900003,
+          "exits": {
+            "trailing_stop_loss": 81,
+            "stop_loss": 14,
+            "roi": 5
+          }
+        },
+        "RiskE0S2F10T15": {
+          "closed_trades": 100,
+          "wins": 48,
+          "closed_win_rate": 0.48,
+          "closed_net_usdt": -805.86494249,
+          "closed_profit_factor": 0.5307008340005276,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -805.86494249,
+          "native_drawdown": 0.08487350232900008,
+          "exits": {
+            "trailing_stop_loss": 71,
+            "roi": 15,
+            "stop_loss": 14
+          }
+        },
+        "RiskE0S2F10T25": {
+          "closed_trades": 100,
+          "wins": 45,
+          "closed_win_rate": 0.45,
+          "closed_net_usdt": -891.91808805,
+          "closed_profit_factor": 0.5014125243662194,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -891.9180880499999,
+          "native_drawdown": 0.09351576136900003,
+          "exits": {
+            "trailing_stop_loss": 81,
+            "stop_loss": 14,
+            "roi": 5
+          }
+        },
+        "RiskE0S4F5T15": {
+          "closed_trades": 80,
+          "wins": 58,
+          "closed_win_rate": 0.725,
+          "closed_net_usdt": -351.51892733999995,
+          "closed_profit_factor": 0.7586908616604913,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -372.04143654,
+          "native_drawdown": 0.08145361362900003,
+          "exits": {
+            "trailing_stop_loss": 53,
+            "stop_loss": 9,
+            "roi": 18,
+            "force_exit": 1
+          }
+        },
+        "RiskE0S4F5T25": {
+          "closed_trades": 79,
+          "wins": 56,
+          "closed_win_rate": 0.7088607594936709,
+          "closed_net_usdt": -283.0189104,
+          "closed_profit_factor": 0.8109974354380686,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -303.6874548,
+          "native_drawdown": 0.08134806783299992,
+          "exits": {
+            "trailing_stop_loss": 62,
+            "stop_loss": 9,
+            "roi": 8,
+            "force_exit": 1
+          }
+        },
+        "RiskE0S4F10T15": {
+          "closed_trades": 80,
+          "wins": 58,
+          "closed_win_rate": 0.725,
+          "closed_net_usdt": -351.51892733999995,
+          "closed_profit_factor": 0.7586908616604913,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -372.04143654,
+          "native_drawdown": 0.08145361362900003,
+          "exits": {
+            "trailing_stop_loss": 53,
+            "stop_loss": 9,
+            "roi": 18,
+            "force_exit": 1
+          }
+        },
+        "RiskE0S4F10T25": {
+          "closed_trades": 79,
+          "wins": 56,
+          "closed_win_rate": 0.7088607594936709,
+          "closed_net_usdt": -283.0189104,
+          "closed_profit_factor": 0.8109974354380686,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -303.6874548,
+          "native_drawdown": 0.08134806783299992,
+          "exits": {
+            "trailing_stop_loss": 62,
+            "stop_loss": 9,
+            "roi": 8,
+            "force_exit": 1
+          }
+        },
+        "NASOSOriginal": {
+          "closed_trades": 9,
+          "wins": 9,
+          "closed_win_rate": 1.0,
+          "closed_net_usdt": 448.24908068,
+          "closed_profit_factor": null,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 267.81754868,
+          "native_drawdown": 0.017269068779537322,
+          "exits": {
+            "roi": 4,
+            "trailing_stop_loss": 5,
+            "force_exit": 1
+          }
+        },
+        "NASOSEntryControl": {
+          "closed_trades": 24,
+          "wins": 24,
+          "closed_win_rate": 1.0,
+          "closed_net_usdt": 791.92425858,
+          "closed_profit_factor": null,
+          "force_exit_count": 2,
+          "terminal_net_usdt": 513.0114551400001,
+          "native_drawdown": 0.025844584965304358,
+          "exits": {
+            "roi": 19,
+            "exit_signal": 4,
+            "trailing_stop_loss": 1,
+            "force_exit": 2
+          }
+        },
+        "RiskNASOSS2F5T15": {
+          "closed_trades": 62,
+          "wins": 31,
+          "closed_win_rate": 0.5,
+          "closed_net_usdt": -677.56226318,
+          "closed_profit_factor": 0.5226085645693187,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -677.5622631800002,
+          "native_drawdown": 0.07261772339896194,
+          "exits": {
+            "stop_loss": 31,
+            "roi": 31
+          }
+        },
+        "RiskNASOSS2F5T25": {
+          "closed_trades": 57,
+          "wins": 22,
+          "closed_win_rate": 0.38596491228070173,
+          "closed_net_usdt": -771.46839514,
+          "closed_profit_factor": 0.5175671750512533,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -764.14081474,
+          "native_drawdown": 0.08443681618082285,
+          "exits": {
+            "stop_loss": 35,
+            "roi": 19,
+            "TUNED_24H_TIME_EXIT": 2,
+            "exit_signal": 1,
+            "force_exit": 1
+          }
+        },
+        "RiskNASOSS2F10T15": {
+          "closed_trades": 62,
+          "wins": 31,
+          "closed_win_rate": 0.5,
+          "closed_net_usdt": -677.56226318,
+          "closed_profit_factor": 0.5226085645693187,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -677.5622631800002,
+          "native_drawdown": 0.07261772339896194,
+          "exits": {
+            "stop_loss": 31,
+            "roi": 31
+          }
+        },
+        "RiskNASOSS2F10T25": {
+          "closed_trades": 57,
+          "wins": 22,
+          "closed_win_rate": 0.38596491228070173,
+          "closed_net_usdt": -771.46839514,
+          "closed_profit_factor": 0.5175671750512533,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -764.14081474,
+          "native_drawdown": 0.08443681618082285,
+          "exits": {
+            "stop_loss": 35,
+            "roi": 19,
+            "TUNED_24H_TIME_EXIT": 2,
+            "exit_signal": 1,
+            "force_exit": 1
+          }
+        },
+        "RiskNASOSS4F5T15": {
+          "closed_trades": 46,
+          "wins": 26,
+          "closed_win_rate": 0.5652173913043478,
+          "closed_net_usdt": -1158.85467525,
+          "closed_profit_factor": 0.33743712167491957,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1158.85467525,
+          "native_drawdown": 0.11588546752500006,
+          "exits": {
+            "stop_loss": 18,
+            "roi": 26,
+            "TUNED_24H_TIME_EXIT": 2
+          }
+        },
+        "RiskNASOSS4F5T25": {
+          "closed_trades": 44,
+          "wins": 24,
+          "closed_win_rate": 0.5454545454545454,
+          "closed_net_usdt": -945.41594408,
+          "closed_profit_factor": 0.4643627199356685,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -945.4159440799999,
+          "native_drawdown": 0.10374812320500004,
+          "exits": {
+            "stop_loss": 18,
+            "roi": 17,
+            "TUNED_24H_TIME_EXIT": 4,
+            "exit_signal": 5
+          }
+        },
+        "RiskNASOSS4F10T15": {
+          "closed_trades": 46,
+          "wins": 26,
+          "closed_win_rate": 0.5652173913043478,
+          "closed_net_usdt": -1158.85467525,
+          "closed_profit_factor": 0.33743712167491957,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1158.85467525,
+          "native_drawdown": 0.11588546752500006,
+          "exits": {
+            "stop_loss": 18,
+            "roi": 26,
+            "TUNED_24H_TIME_EXIT": 2
+          }
+        },
+        "RiskNASOSS4F10T25": {
+          "closed_trades": 44,
+          "wins": 24,
+          "closed_win_rate": 0.5454545454545454,
+          "closed_net_usdt": -945.41594408,
+          "closed_profit_factor": 0.4643627199356685,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -945.4159440799999,
+          "native_drawdown": 0.10374812320500004,
+          "exits": {
+            "stop_loss": 18,
+            "roi": 17,
+            "TUNED_24H_TIME_EXIT": 4,
+            "exit_signal": 5
+          }
+        },
+        "BBOriginal": {
+          "closed_trades": 6,
+          "wins": 5,
+          "closed_win_rate": 0.8333333333333334,
+          "closed_net_usdt": 131.48386572,
+          "closed_profit_factor": 6.623052080933995,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 139.52826251999997,
+          "native_drawdown": 0.002338300691999939,
+          "exits": {
+            "trailing_stop_loss": 4,
+            "sell_profit_t_0_2( bb ewo )": 1,
+            "sell_profit_t_1_1( local_dip )": 1,
+            "force_exit": 1
+          }
+        },
+        "BBEntryControl": {
+          "closed_trades": 15,
+          "wins": 13,
+          "closed_win_rate": 0.8666666666666667,
+          "closed_net_usdt": 143.67975725000002,
+          "closed_profit_factor": 1.6547073510182742,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 94.42012132999997,
+          "native_drawdown": 0.021819717955887784,
+          "exits": {
+            "sell_profit_t_1_1( ewo )": 4,
+            "trailing_stop_loss": 1,
+            "sell_stoploss_deadfish( ewo )": 2,
+            "signal_profit_q_momdiv_coh( local_dip ewo )": 1,
+            "signal_profit_q_momdiv( ewo )": 2,
+            "sell_profit_t_cti_r_0_1( ewo )": 1,
+            "roi": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 2,
+            "signal_profit_q_pmax_bear( ewo )": 1,
+            "force_exit": 1
+          }
+        },
+        "RiskBBS2F5T15": {
+          "closed_trades": 31,
+          "wins": 20,
+          "closed_win_rate": 0.6451612903225806,
+          "closed_net_usdt": -15.665803060000005,
+          "closed_profit_factor": 0.9687860426830789,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -15.665803060000037,
+          "native_drawdown": 0.024510218017999977,
+          "exits": {
+            "stop_loss": 11,
+            "roi": 19,
+            "sell_profit_t_1_1( ewo )": 1
+          }
+        },
+        "RiskBBS2F5T25": {
+          "closed_trades": 30,
+          "wins": 18,
+          "closed_win_rate": 0.6,
+          "closed_net_usdt": 54.77576649000001,
+          "closed_profit_factor": 1.0997085618861002,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 62.759406690000006,
+          "native_drawdown": 0.02773930271900008,
+          "exits": {
+            "stop_loss": 12,
+            "roi": 8,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( local_dip ewo )": 2,
+            "signal_profit_q_momdiv( ewo )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 2,
+            "force_exit": 1
+          }
+        },
+        "RiskBBS2F10T15": {
+          "closed_trades": 31,
+          "wins": 20,
+          "closed_win_rate": 0.6451612903225806,
+          "closed_net_usdt": -15.665803060000005,
+          "closed_profit_factor": 0.9687860426830789,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -15.665803060000037,
+          "native_drawdown": 0.024510218017999977,
+          "exits": {
+            "stop_loss": 11,
+            "roi": 19,
+            "sell_profit_t_1_1( ewo )": 1
+          }
+        },
+        "RiskBBS2F10T25": {
+          "closed_trades": 30,
+          "wins": 18,
+          "closed_win_rate": 0.6,
+          "closed_net_usdt": 54.77576649000001,
+          "closed_profit_factor": 1.0997085618861002,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 62.759406690000006,
+          "native_drawdown": 0.02773930271900008,
+          "exits": {
+            "stop_loss": 12,
+            "roi": 8,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( local_dip ewo )": 2,
+            "signal_profit_q_momdiv( ewo )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 2,
+            "force_exit": 1
+          }
+        },
+        "RiskBBS4F5T15": {
+          "closed_trades": 28,
+          "wins": 20,
+          "closed_win_rate": 0.7142857142857143,
+          "closed_net_usdt": -141.63434201,
+          "closed_profit_factor": 0.7711043853912594,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -141.63434201,
+          "native_drawdown": 0.04682246285199999,
+          "exits": {
+            "stop_loss": 8,
+            "roi": 19,
+            "sell_profit_t_1_1( ewo )": 1
+          }
+        },
+        "RiskBBS4F5T25": {
+          "closed_trades": 27,
+          "wins": 19,
+          "closed_win_rate": 0.7037037037037037,
+          "closed_net_usdt": 9.827300419999982,
+          "closed_profit_factor": 1.0158655069536007,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 22.246246499999984,
+          "native_drawdown": 0.04997803801800001,
+          "exits": {
+            "stop_loss": 8,
+            "roi": 8,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( local_dip ewo )": 2,
+            "signal_profit_q_momdiv( ewo )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 3,
+            "force_exit": 1
+          }
+        },
+        "RiskBBS4F10T15": {
+          "closed_trades": 28,
+          "wins": 20,
+          "closed_win_rate": 0.7142857142857143,
+          "closed_net_usdt": -141.63434201,
+          "closed_profit_factor": 0.7711043853912594,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -141.63434201,
+          "native_drawdown": 0.04682246285199999,
+          "exits": {
+            "stop_loss": 8,
+            "roi": 19,
+            "sell_profit_t_1_1( ewo )": 1
+          }
+        },
+        "RiskBBS4F10T25": {
+          "closed_trades": 27,
+          "wins": 19,
+          "closed_win_rate": 0.7037037037037037,
+          "closed_net_usdt": 9.827300419999982,
+          "closed_profit_factor": 1.0158655069536007,
+          "force_exit_count": 1,
+          "terminal_net_usdt": 22.246246499999984,
+          "native_drawdown": 0.04997803801800001,
+          "exits": {
+            "stop_loss": 8,
+            "roi": 8,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( local_dip ewo )": 2,
+            "signal_profit_q_momdiv( ewo )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 3,
+            "force_exit": 1
+          }
+        }
+      }
+    },
+    "validation": {
+      "stage": "validation",
+      "fee_per_side": 0.004,
+      "network_requests": 0,
+      "orders": 0,
+      "qualification_eligible": false,
+      "callback_audit": {
+        "callback_failures": 0,
+        "examples": [],
+        "result_valid": true
+      },
+      "strategies": {
+        "E0Original": {
+          "closed_trades": 12,
+          "wins": 11,
+          "closed_win_rate": 0.9166666666666666,
+          "closed_net_usdt": 277.01295114,
+          "closed_profit_factor": 2.7383788177946244,
+          "force_exit_count": 0,
+          "terminal_net_usdt": 277.01295114,
+          "native_drawdown": 0.015639494031174664,
+          "exits": {
+            "trailing_stop_loss": 11,
+            "sell_stoploss_deadfish": 1
+          }
+        },
+        "E0EntryControl": {
+          "closed_trades": 128,
+          "wins": 106,
+          "closed_win_rate": 0.828125,
+          "closed_net_usdt": -361.19966766,
+          "closed_profit_factor": 0.872367270207103,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -361.19966766000005,
+          "native_drawdown": 0.12395059947023011,
+          "exits": {
+            "trailing_stop_loss": 106,
+            "sell_stoploss_deadfish": 22
+          }
+        },
+        "RiskE0S2F5T15": {
+          "closed_trades": 344,
+          "wins": 108,
+          "closed_win_rate": 0.313953488372093,
+          "closed_net_usdt": -4331.57602764,
+          "closed_profit_factor": 0.2851716428596723,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -4331.57602764,
+          "native_drawdown": 0.4343561327932983,
+          "exits": {
+            "trailing_stop_loss": 237,
+            "roi": 51,
+            "stop_loss": 56
+          }
+        },
+        "RiskE0S2F5T25": {
+          "closed_trades": 344,
+          "wins": 94,
+          "closed_win_rate": 0.27325581395348836,
+          "closed_net_usdt": -4530.4591744,
+          "closed_profit_factor": 0.26009608091965297,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -4530.4591744,
+          "native_drawdown": 0.45560751772236957,
+          "exits": {
+            "trailing_stop_loss": 274,
+            "roi": 14,
+            "stop_loss": 56
+          }
+        },
+        "RiskE0S2F10T15": {
+          "closed_trades": 344,
+          "wins": 108,
+          "closed_win_rate": 0.313953488372093,
+          "closed_net_usdt": -4331.57602764,
+          "closed_profit_factor": 0.2851716428596723,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -4331.57602764,
+          "native_drawdown": 0.4343561327932983,
+          "exits": {
+            "trailing_stop_loss": 237,
+            "roi": 51,
+            "stop_loss": 56
+          }
+        },
+        "RiskE0S2F10T25": {
+          "closed_trades": 344,
+          "wins": 94,
+          "closed_win_rate": 0.27325581395348836,
+          "closed_net_usdt": -4530.4591744,
+          "closed_profit_factor": 0.26009608091965297,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -4530.4591744,
+          "native_drawdown": 0.45560751772236957,
+          "exits": {
+            "trailing_stop_loss": 274,
+            "roi": 14,
+            "stop_loss": 56
+          }
+        },
+        "RiskE0S4F5T15": {
+          "closed_trades": 242,
+          "wins": 146,
+          "closed_win_rate": 0.6033057851239669,
+          "closed_net_usdt": -2832.66454241,
+          "closed_profit_factor": 0.47599239402970905,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -2832.6645424099997,
+          "native_drawdown": 0.30510565256125866,
+          "exits": {
+            "trailing_stop_loss": 162,
+            "roi": 63,
+            "stop_loss": 17
+          }
+        },
+        "RiskE0S4F5T25": {
+          "closed_trades": 239,
+          "wins": 141,
+          "closed_win_rate": 0.5899581589958159,
+          "closed_net_usdt": -2640.72423785,
+          "closed_profit_factor": 0.5223777576078219,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -2640.7242378500005,
+          "native_drawdown": 0.3034707304089159,
+          "exits": {
+            "trailing_stop_loss": 200,
+            "roi": 22,
+            "stop_loss": 17
+          }
+        },
+        "RiskE0S4F10T15": {
+          "closed_trades": 242,
+          "wins": 146,
+          "closed_win_rate": 0.6033057851239669,
+          "closed_net_usdt": -2832.66454241,
+          "closed_profit_factor": 0.47599239402970905,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -2832.6645424099997,
+          "native_drawdown": 0.30510565256125866,
+          "exits": {
+            "trailing_stop_loss": 162,
+            "roi": 63,
+            "stop_loss": 17
+          }
+        },
+        "RiskE0S4F10T25": {
+          "closed_trades": 239,
+          "wins": 141,
+          "closed_win_rate": 0.5899581589958159,
+          "closed_net_usdt": -2640.72423785,
+          "closed_profit_factor": 0.5223777576078219,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -2640.7242378500005,
+          "native_drawdown": 0.3034707304089159,
+          "exits": {
+            "trailing_stop_loss": 200,
+            "roi": 22,
+            "stop_loss": 17
+          }
+        },
+        "NASOSOriginal": {
+          "closed_trades": 11,
+          "wins": 10,
+          "closed_win_rate": 0.9090909090909091,
+          "closed_net_usdt": -188.23624435999994,
+          "closed_profit_factor": 0.6359285829541562,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -188.23624435999994,
+          "native_drawdown": 0.050617037920076526,
+          "exits": {
+            "exit_signal": 2,
+            "trailing_stop_loss": 3,
+            "roi": 5,
+            "stop_loss": 1
+          }
+        },
+        "NASOSEntryControl": {
+          "closed_trades": 58,
+          "wins": 53,
+          "closed_win_rate": 0.9137931034482759,
+          "closed_net_usdt": -973.2266753500002,
+          "closed_profit_factor": 0.6491400238972783,
+          "force_exit_count": 1,
+          "terminal_net_usdt": -1148.00528447,
+          "native_drawdown": 0.16846184722288396,
+          "exits": {
+            "trailing_stop_loss": 6,
+            "exit_signal": 6,
+            "roi": 41,
+            "stop_loss": 5,
+            "force_exit": 1
+          }
+        },
+        "RiskNASOSS2F5T15": {
+          "closed_trades": 133,
+          "wins": 62,
+          "closed_win_rate": 0.46616541353383456,
+          "closed_net_usdt": -1625.57112444,
+          "closed_profit_factor": 0.46995504993089005,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1625.57112444,
+          "native_drawdown": 0.1717098786255891,
+          "exits": {
+            "roi": 62,
+            "stop_loss": 71
+          }
+        },
+        "RiskNASOSS2F5T25": {
+          "closed_trades": 121,
+          "wins": 46,
+          "closed_win_rate": 0.38016528925619836,
+          "closed_net_usdt": -1454.13502385,
+          "closed_profit_factor": 0.548699483711611,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1454.13502385,
+          "native_drawdown": 0.15693900710554767,
+          "exits": {
+            "roi": 46,
+            "stop_loss": 74,
+            "TUNED_24H_TIME_EXIT": 1
+          }
+        },
+        "RiskNASOSS2F10T15": {
+          "closed_trades": 133,
+          "wins": 62,
+          "closed_win_rate": 0.46616541353383456,
+          "closed_net_usdt": -1625.57112444,
+          "closed_profit_factor": 0.46995504993089005,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1625.57112444,
+          "native_drawdown": 0.1717098786255891,
+          "exits": {
+            "roi": 62,
+            "stop_loss": 71
+          }
+        },
+        "RiskNASOSS2F10T25": {
+          "closed_trades": 121,
+          "wins": 46,
+          "closed_win_rate": 0.38016528925619836,
+          "closed_net_usdt": -1454.13502385,
+          "closed_profit_factor": 0.548699483711611,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1454.13502385,
+          "native_drawdown": 0.15693900710554767,
+          "exits": {
+            "roi": 46,
+            "stop_loss": 74,
+            "TUNED_24H_TIME_EXIT": 1
+          }
+        },
+        "RiskNASOSS4F5T15": {
+          "closed_trades": 98,
+          "wins": 58,
+          "closed_win_rate": 0.5918367346938775,
+          "closed_net_usdt": -1701.90338361,
+          "closed_profit_factor": 0.4417090550049731,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1701.90338361,
+          "native_drawdown": 0.1894998168153854,
+          "exits": {
+            "roi": 55,
+            "stop_loss": 37,
+            "exit_signal": 2,
+            "TUNED_24H_TIME_EXIT": 4
+          }
+        },
+        "RiskNASOSS4F5T25": {
+          "closed_trades": 93,
+          "wins": 47,
+          "closed_win_rate": 0.5053763440860215,
+          "closed_net_usdt": -1743.93958494,
+          "closed_profit_factor": 0.49042012166037274,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1743.93958494,
+          "native_drawdown": 0.19363837611253937,
+          "exits": {
+            "roi": 36,
+            "exit_signal": 10,
+            "stop_loss": 42,
+            "TUNED_24H_TIME_EXIT": 5
+          }
+        },
+        "RiskNASOSS4F10T15": {
+          "closed_trades": 98,
+          "wins": 58,
+          "closed_win_rate": 0.5918367346938775,
+          "closed_net_usdt": -1701.90338361,
+          "closed_profit_factor": 0.4417090550049731,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1701.90338361,
+          "native_drawdown": 0.1894998168153854,
+          "exits": {
+            "roi": 55,
+            "stop_loss": 37,
+            "exit_signal": 2,
+            "TUNED_24H_TIME_EXIT": 4
+          }
+        },
+        "RiskNASOSS4F10T25": {
+          "closed_trades": 93,
+          "wins": 47,
+          "closed_win_rate": 0.5053763440860215,
+          "closed_net_usdt": -1743.93958494,
+          "closed_profit_factor": 0.49042012166037274,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1743.93958494,
+          "native_drawdown": 0.19363837611253937,
+          "exits": {
+            "roi": 36,
+            "exit_signal": 10,
+            "stop_loss": 42,
+            "TUNED_24H_TIME_EXIT": 5
+          }
+        },
+        "BBOriginal": {
+          "closed_trades": 21,
+          "wins": 15,
+          "closed_win_rate": 0.7142857142857143,
+          "closed_net_usdt": 159.09305768,
+          "closed_profit_factor": 1.5413838810022928,
+          "force_exit_count": 0,
+          "terminal_net_usdt": 159.09305767999996,
+          "native_drawdown": 0.01694479173512947,
+          "exits": {
+            "signal_profit_q_momdiv( nfix_39 )": 1,
+            "trailing_stop_loss": 7,
+            "sell_profit_t_0_2( bb ewo )": 1,
+            "sell_profit_t_1_1( bb )": 2,
+            "sell_stoploss_deadfish( clucHA nfix_39 )": 1,
+            "sell_profit_t_1_1( clucHA )": 1,
+            "signal_profit_q_pmax_bear( clucHA )": 1,
+            "sell_profit_t_cti_r_0_1( clucHA )": 2,
+            "signal_profit_q_momdiv_coh( nfi_38 )": 1,
+            "sell_profit_t_0_1( clucHA )": 1,
+            "signal_profit_q_pmax_bear( local_uptrend clucHA )": 1,
+            "signal_profit_q_pmax_bear( local_uptrend local_dip clucHA )": 1,
+            "roi": 1
+          }
+        },
+        "BBEntryControl": {
+          "closed_trades": 46,
+          "wins": 38,
+          "closed_win_rate": 0.8260869565217391,
+          "closed_net_usdt": -215.61272658,
+          "closed_profit_factor": 0.8024862292949941,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -215.61272658000007,
+          "native_drawdown": 0.051378329010689464,
+          "exits": {
+            "sell_profit_t_cti_r_0_1( ewo )": 11,
+            "signal_profit_q_momdiv_coh( ewo )": 4,
+            "trailing_stop_loss": 5,
+            "roi": 4,
+            "signal_profit_q_momdiv( ewo )": 4,
+            "sell_stoploss_deadfish( ewo )": 8,
+            "sell_profit_t_1_1( ewo )": 4,
+            "signal_profit_q_pmax_bear( ewo )": 2,
+            "sell_profit_t_0_2( ewo )": 2,
+            "signal_profit_q_momdiv_coh( nfi_38 )": 1,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS2F5T15": {
+          "closed_trades": 120,
+          "wins": 58,
+          "closed_win_rate": 0.48333333333333334,
+          "closed_net_usdt": -1386.26116508,
+          "closed_profit_factor": 0.4789154826500979,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1386.26116508,
+          "native_drawdown": 0.1553177955483222,
+          "exits": {
+            "roi": 49,
+            "sell_profit_t_cti_r_0_1( ewo )": 4,
+            "stop_loss": 62,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo clucHA )": 1,
+            "sell_profit_t_1_1( ewo )": 2,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS2F5T25": {
+          "closed_trades": 116,
+          "wins": 57,
+          "closed_win_rate": 0.49137931034482757,
+          "closed_net_usdt": -763.9846735,
+          "closed_profit_factor": 0.7072882834563523,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -763.9846735,
+          "native_drawdown": 0.11072501372975267,
+          "exits": {
+            "sell_profit_t_cti_r_0_1( ewo )": 4,
+            "roi": 33,
+            "stop_loss": 59,
+            "sell_profit_t_1_1( ewo )": 6,
+            "sell_profit_t_1_1( local_dip ewo nfix_39 )": 1,
+            "sell_profit_t_1_1( local_uptrend ewo clucHA nfix_39 )": 1,
+            "sell_profit_t_1_1( local_dip ewo )": 1,
+            "sell_profit_t_1_1( bb ewo )": 2,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo clucHA )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 1,
+            "signal_profit_q_pmax_bear( local_uptrend clucHA )": 1,
+            "signal_profit_q_pmax_bear( ewo clucHA )": 1,
+            "sell_profit_t_0_1( clucHA )": 1,
+            "sell_profit_t_1_1( sqzmom )": 1,
+            "sell_profit_t_1_1( gumbo )": 1,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS2F10T15": {
+          "closed_trades": 120,
+          "wins": 57,
+          "closed_win_rate": 0.475,
+          "closed_net_usdt": -1420.99514671,
+          "closed_profit_factor": 0.47351411241738195,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1420.99514671,
+          "native_drawdown": 0.15945774474063504,
+          "exits": {
+            "roi": 50,
+            "stop_loss": 63,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo clucHA )": 1,
+            "sell_profit_t_1_1( ewo )": 2,
+            "sell_profit_t_cti_r_0_1( ewo )": 2,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS2F10T25": {
+          "closed_trades": 116,
+          "wins": 56,
+          "closed_win_rate": 0.4827586206896552,
+          "closed_net_usdt": -764.95998626,
+          "closed_profit_factor": 0.7116414334325962,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -764.9599862599999,
+          "native_drawdown": 0.1150871352709616,
+          "exits": {
+            "roi": 34,
+            "signal_profit_q_momdiv_coh( ewo )": 2,
+            "stop_loss": 60,
+            "sell_profit_t_1_1( ewo )": 6,
+            "sell_profit_t_1_1( local_dip ewo nfix_39 )": 1,
+            "sell_profit_t_1_1( local_uptrend ewo clucHA nfix_39 )": 1,
+            "sell_profit_t_1_1( local_dip ewo )": 1,
+            "sell_profit_t_1_1( bb ewo )": 2,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo clucHA )": 1,
+            "sell_profit_t_cti_r_0_1( ewo )": 2,
+            "signal_profit_q_pmax_bear( local_uptrend clucHA )": 1,
+            "signal_profit_q_pmax_bear( ewo clucHA )": 1,
+            "sell_profit_t_1_1( sqzmom )": 1,
+            "sell_profit_t_1_1( gumbo )": 1,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS4F5T15": {
+          "closed_trades": 95,
+          "wins": 59,
+          "closed_win_rate": 0.6210526315789474,
+          "closed_net_usdt": -1316.36282857,
+          "closed_profit_factor": 0.4961049987612704,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1316.36282857,
+          "native_drawdown": 0.15404108680507664,
+          "exits": {
+            "roi": 52,
+            "sell_profit_t_cti_r_0_1( ewo )": 4,
+            "stop_loss": 35,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo )": 1,
+            "TUNED_24H_TIME_EXIT": 1,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS4F5T25": {
+          "closed_trades": 87,
+          "wins": 53,
+          "closed_win_rate": 0.6091954022988506,
+          "closed_net_usdt": -800.73694215,
+          "closed_profit_factor": 0.6842402726423192,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -800.7369421500002,
+          "native_drawdown": 0.11695748819570312,
+          "exits": {
+            "sell_profit_t_cti_r_0_1( ewo )": 4,
+            "roi": 31,
+            "stop_loss": 33,
+            "sell_profit_t_1_1( local_dip ewo clucHA )": 1,
+            "sell_profit_t_1_1( local_uptrend ewo clucHA nfix_39 )": 1,
+            "sell_profit_t_1_1( local_dip ewo )": 1,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( bb ewo )": 2,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "signal_profit_q_momdiv_coh( ewo )": 2,
+            "TUNED_24H_TIME_EXIT": 1,
+            "signal_profit_q_pmax_bear( local_uptrend clucHA )": 1,
+            "signal_profit_q_pmax_bear( ewo clucHA )": 1,
+            "sell_profit_t_0_1( clucHA )": 1,
+            "sell_profit_t_1_12( ewo )": 1,
+            "signal_profit_q_pmax_bear( ewo )": 1
+          }
+        },
+        "RiskBBS4F10T15": {
+          "closed_trades": 95,
+          "wins": 58,
+          "closed_win_rate": 0.6105263157894737,
+          "closed_net_usdt": -1380.22471505,
+          "closed_profit_factor": 0.48455535052697285,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -1380.2247150499998,
+          "native_drawdown": 0.16099458847826034,
+          "exits": {
+            "roi": 53,
+            "stop_loss": 36,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_1_1( ewo )": 1,
+            "sell_profit_t_cti_r_0_1( ewo )": 2,
+            "TUNED_24H_TIME_EXIT": 1,
+            "sell_profit_t_1_12( ewo )": 1
+          }
+        },
+        "RiskBBS4F10T25": {
+          "closed_trades": 87,
+          "wins": 52,
+          "closed_win_rate": 0.5977011494252874,
+          "closed_net_usdt": -832.41791658,
+          "closed_profit_factor": 0.6806033469623579,
+          "force_exit_count": 0,
+          "terminal_net_usdt": -832.4179165799999,
+          "native_drawdown": 0.12373575509172018,
+          "exits": {
+            "roi": 32,
+            "signal_profit_q_momdiv_coh( ewo )": 3,
+            "stop_loss": 34,
+            "sell_profit_t_1_1( local_dip ewo clucHA )": 1,
+            "sell_profit_t_1_1( local_uptrend ewo clucHA nfix_39 )": 1,
+            "sell_profit_t_1_1( local_dip ewo )": 1,
+            "sell_profit_t_1_1( ewo )": 5,
+            "sell_profit_t_1_1( bb ewo )": 2,
+            "sell_profit_u_bear_1_1( ewo )": 1,
+            "sell_profit_t_cti_r_0_1( ewo )": 2,
+            "TUNED_24H_TIME_EXIT": 1,
+            "signal_profit_q_pmax_bear( local_uptrend clucHA )": 1,
+            "signal_profit_q_pmax_bear( ewo clucHA )": 1,
+            "sell_profit_t_1_12( ewo )": 1,
+            "signal_profit_q_pmax_bear( ewo )": 1
+          }
+        }
+      }
+    }
+  },
+  "selection": {
+    "selected": null,
+    "passing_candidates": [],
+    "rejections": {
+      "E0EntryControl": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ],
+      "RiskE0S2F5T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S2F5T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S2F10T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S2F10T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S4F5T15": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S4F5T25": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S4F10T15": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskE0S4F10T25": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "NASOSEntryControl": [
+        "development: too few closed trades",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS2F5T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS2F5T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS2F10T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS2F10T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS4F5T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS4F5T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS4F10T15": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskNASOSS4F10T25": [
+        "development: win rate below 60 percent",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "BBEntryControl": [
+        "development: too few closed trades",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ],
+      "RiskBBS2F5T15": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskBBS2F5T25": [
+        "development: profit factor below 1.15",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ],
+      "RiskBBS2F10T15": [
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskBBS2F10T25": [
+        "development: profit factor below 1.15",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ],
+      "RiskBBS4F5T15": [
+        "development: too few closed trades",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskBBS4F5T25": [
+        "development: too few closed trades",
+        "development: profit factor below 1.15",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ],
+      "RiskBBS4F10T15": [
+        "development: too few closed trades",
+        "development: profit factor below 1.15",
+        "development: nonpositive terminal PnL",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL",
+        "validation: native drawdown above 15 percent"
+      ],
+      "RiskBBS4F10T25": [
+        "development: too few closed trades",
+        "development: profit factor below 1.15",
+        "validation: win rate below 60 percent",
+        "validation: profit factor below 1.15",
+        "validation: nonpositive terminal PnL"
+      ]
+    },
+    "holdout_opened": false,
+    "qualification_eligible": false
+  },
+  "conclusion": "No faster variant passed both periods. BB tag-only repair is deployable; parameter changes are not promoted.",
+  "holdout_opened": false,
+  "fee_stress_run": false,
+  "tests_passed": 28,
+  "native_version": "2026.9",
+  "network_requests_during_replay": 0,
+  "orders": 0
+}

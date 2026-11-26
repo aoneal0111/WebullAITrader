@@ -1,0 +1,226 @@
+# Seven Grok roles and the separate online observer
+
+## Authority and implementation
+
+This follows the Atlas plan for Warrior, Quick Scalper, Crypto, Options and
+Futures advisers, a Master coordinating proposals against account evidence,
+and Learning reviewing paired experiments. One shared client/model supplies
+the roles. Existing engine worker modules remain separate native owners;
+the GUI is retained. This change does not install seven GUI bots, launch Atlas,
+enable live trading, or create an autonomous policy/code-writing agent.
+
+`GrokDecisionCouncil` adds one bounded, immutable cycle across all five engine
+advisers, Master and the existing LearningJournal. It accepts at most 32 globally
+unique native candidates with validity of at most 60 seconds. It copies evidence
+before the first request and clears absent engines' old advice each cycle.
+Each engine can select its own native IDs; Master can select among surviving
+engine recommendations. Returned objects remain bound to the original typed
+Candidate, intent, owner, revision and deadline. A failed review, asynchronous
+stop, stale result or duplicate cycle cannot yield a dispatch grant. The cycle
+limit is 100 and concurrent submissions are refused, never queued.
+
+Supported proposal intents are ENTRY, CANCEL_ENTRY, REPLACE_ENTRY, REDUCE, CLOSE,
+and TIGHTEN_STOP. A council decision is a command *plan*, not permission to
+reserve funds, change a position, or place an order. Its execution_authorized
+is always false. The existing controlled PAPER dispatcher independently handles
+trusted, originally prepared equity entry placements. This council does not
+replace that dispatcher or turn model-created JSON into a placement.
+
+| Role/path | Available | Remaining activation boundary |
+|---|---|---|
+| Warrior / Scalper | Independent advisers, entry review/controlled PAPER handoff, fresh-context observer | Qualified native strategy, current risk/quote authorization and explicit PAPER review activation |
+| Crypto | Adviser, native worker, separate paper ledger/allocation/protection components | Verified desktop activation and current native commands; proposals remain off |
+| Options / Futures | Advisers, offline/native workers and paper allocation components | Desktop data/execution adapters are not connected |
+| Master | Ranks original surviving engine candidates with copied account evidence | Allocation and order admission remain controlled native responsibilities |
+| Learning | Durable paired-experiment review and nominations | No automatic policy promotion, strategy rewrite or model training |
+| Non-entry management | Owned/revision-bound candidate protocol and council planning | Generic desktop cancel/replace/reduce/close/stop dispatch is not implemented here |
+
+Learning can be explicitly requested for one pending paired experiment. It
+cannot replace Master-selected commands. A slow learning request revokes a
+command plan that expires while waiting. For active decision cycles, schedule
+learning separately: five engine reviews plus Master can consume six requests,
+so adding a seventh call in the same minute can exceed a six-RPM API key cap.
+No review is retried automatically to work around a provider limit.
+
+The equity release registry remains empty. This change does not qualify a
+strategy, enable new BUYs, relax risk or freshness checks, or intercept native
+protective stops. Actual management/market adapters must be implemented and
+verified before describing every role as an automatically executing bot.
+
+## Separate online observation trial
+
+`app.asset_modules.grok_online_observer` is a separate command-line process. It
+reads the existing private native context capture and uses GrokObserverTrial
+for Warrior and Scalper. It has no controller, broker, ledger, order-service,
+management-dispatch or settings-writing connection. The Atlas capture process
+continues to block every GrokClient.request locally; that does not block this
+explicit, separately launched observer process.
+
+Explicit `--online` consent is mandatory. Bounds are 20 attempted inferences,
+100 distinct source records, 1 MB input, 900 seconds waiting for a first fresh
+record, then 300 seconds of observation. These request bounds are not a dollar
+budget. Existing per-role 60-second cooldowns and the client's total attempt
+limit still apply. Provider failures count; no automatic retries occur. Advice
+arriving after its original two-second evidence expires remains ADVICE_EXPIRED,
+not a usable decision. Missing, stale, malformed, fixture-only, revised or
+wrong-baseline inputs cannot be turned into fresh market evidence.
+
+The parent native capture writes observer-manifest.json with the baseline and
+source/settings hashes. The supplied manual launcher verifies that manifest,
+its associated capture path, the original and staged source receipt, and the
+current effective configuration before constructing the online client. It
+rechecks source/configuration at completion. It never retimes an old recording.
+The direct --baseline API is also available for explicit controlled experiments;
+its summary does not claim native manifest verification.
+
+The client now reports provider-reported input/output token totals. Missing
+usage and failed attempts without reported usage remain visible and must not
+be interpreted as zero charges. Token counts are not a complete invoice: taxes,
+provider pricing, caching, other usage details or tools are not priced here.
+No web/X search tools are enabled. Real account credentials remain local.
+
+The local private-observations.jsonl file includes symbols/model reasons and
+should remain private. Share only online-results/summary.json. The summary has
+status counts, per-engine coverage, attempt/token accounting, baseline checks
+and zero observer order authority. It does not report profitability, approve
+policies or claim readiness of other market adapters.
+
+## Manual workflow
+
+1. Keep PAPER, LIVE_TRADING_ENABLED=false and
+   ATLAS_GROK_PAPER_ENTRIES_ENABLED=false. Crypto AI proposals remain unchecked.
+2. With Atlas closed, run tools/prepare-grok-observer-trial.ps1 with an exact
+   reviewed Revision. This creates a persistent pinned observer worktree and
+   fresh capture of the installed baseline outside OneDrive. No merge or
+   settings change occurs and no model/GUI is started by preparation.
+3. In one terminal manually run capture/Start-Observer-Capture.ps1, then use
+   normal START in Atlas. This is the user's explicit GUI launch.
+4. In another terminal manually run Start-Grok-Observer.ps1. It starts only the
+   separate observer, allows the bounded paid requests and cannot submit orders.
+5. Share online-results/summary.json and capture/session-summary.json. Leave
+   private records, source receipts, .env and keys local. New runs require new
+   output directories. Changed source/configuration requires new preparation.
+
+No authenticated provider call is made during development/tests. Offline fake
+transports verify all five engine roles, Master and Learning nominations,
+management ownership contracts, caller-mutation isolation, duplicate/stop/busy
+handling, stale/future/native-source validation and usage accounting. Those
+checks establish software mechanics, not profitable performance or installed
+workstation activation.
+
+## Request failure and latency diagnostics
+
+The observer summary includes `client_diagnostics`: completed attempt counts,
+received responses, parsed answers, total/maximum request latency in milliseconds,
+and fixed failure categories. HTTP failures expose only numeric 400–599 status
+codes. Timeout, network/TLS, oversized/invalid/incomplete responses and provider
+response errors are counted separately. No provider body, URL, exception text,
+header, prompt, key or model answer is copied into those diagnostics. HTTP error
+bodies are closed without reading them. Diagnostics do not retry requests or alter freshness rules, schema or order controls.
+The execution-review transport retains its 15-second timeout; the explicit
+background observer transport below uses 30 seconds.
+Counters describe this client lifetime; the manual launcher creates a fresh client.
+
+`startup_wait_seconds` and `active_observation_seconds` separate waiting for the
+first fresh record from the five-minute observation period. A request in progress
+may finish after the active deadline; its original freshness is still enforced.
+A successful synthetic schema request taking 6.42 seconds proves that request's
+endpoint/schema compatibility, not availability during a prior failure, live
+context performance or the ability to act on a two-second quote. The regression
+test explicitly records such a delayed answer as ADVICE_EXPIRED with execution
+unauthorized. Native scalping and protective exits must not wait on model calls.
+
+## Background advisory transport (V2)
+
+The manual online CLI now calls `run_background` rather than the synchronous
+reference `run`. Warrior and Quick Scalper have independent advisory lanes in
+the separate observer process. One shared GrokClient still limits concurrency
+to two, each role to one attempt per minute, and the trial to at most twenty
+reserved requests in total. Capture ingestion never waits for either model.
+Each owner holds at most one latest pending context; newer evidence replaces
+older pending evidence. Old/equal context cannot supersede a newer admitted
+context. Pending context is rechecked immediately before request launch and
+again inside the real observer serializer; stale data is never retimed.
+
+The observer transport timeout is thirty seconds, isolated from the default
+fifteen-second execution-review transport. This can allow a slow response to
+finish; it does not make that response executable or promise provider success.
+Stop prevents further scheduling and drops pending contexts without waiting for
+a model. The CLI allows up to 31 seconds for already-admitted calls to settle
+and records any still in flight with `accounting_final=false`; those calls may
+still incur charges. Native protection is in a different process and lane.
+
+A schema-valid delayed answer retains its view/reason in the private observation
+log with `status=ADVICE_EXPIRED`, `advisory_only=true`, original evidence capture
+time, response completion time and evidence age. Invalid output is not retained
+as an answer. No old capture or completed answer becomes a fresh quote. The
+private-advisory-state.json file is an atomic research view of up to twenty
+latest completed engine/symbol notes; it is not a desktop decision input and
+must remain local. Summary.json exposes counts and timings only, not reasons,
+symbols or performance. The source/settings receipt checks remain mandatory.
+
+This version establishes working asynchronous communication between the native
+capture and two background advisers. It does not connect those notes to live
+or PAPER trade decisions, enable the seven-role council automatically, approve
+a strategy or wire missing Options/Futures adapters. Connecting a council plan
+to actual orders still requires qualified native candidates and current native
+quote/risk/ownership checks. Do not enable the Grok order-review flag for this
+trial. No external bot framework is required for this bounded adapter.
+
+Validation uses blocking fake providers to prove Scalper completes while
+Warrior is waiting, capture ingestion continues, queues remain bounded, stop
+does not wait, stale pending contexts make no request, requests stop at twenty,
+invalid commands remain invalid, and delayed reasoning remains expired. A real
+subprocess test blocks all networking and exercises the actual background
+serializer and file writer. No paid inference, GUI launch or broker order is
+performed during development. Windows preparation runs these tests locally.
+
+## Premarket and after-hours observation
+
+The manual capture launcher accepts PREMARKET, CORE and AFTER_HOURS by default.
+On ordinary U.S. equity trading days the capture window is 04:00–20:00 ET;
+on NYSE early-close dates it ends at 17:00 ET. Holidays, weekends and overnight
+remain closed. America/New_York time-zone conversion handles daylight saving;
+the existing trading calendar determines holidays and early closes.
+
+The capture can cross the regular opening/closing bell and keeps its existing
+15-minute startup wait and five-minute active bound, capped at extended-hours
+end. Reports record the session at launch and that end boundary. This changes
+capture availability, not trading permissions, policy qualification, protective
+exits or order-review flags. Native engine assessments, current provider quotes
+and causal completed bars remain required. Sparse extended-hours data or an
+engine that emits no assessments can yield partial or empty coverage; no old
+quote is substituted. The tools do not provide continuous or scheduled capture.
+
+Official hours checked October 26, 2026:
+https://www.webull.com/help/faq/10960 and
+https://www.webull.com/help/faq/11110-Market-Closures.
+
+## Initial Scalper freshness diagnosis
+
+The passive frozen-source hook now measures initial QUICK_SCALP_STREAM policy
+rejections before any authoritative quote request. Previously the component
+freshness counters were populated only after reaching confirmation; zeroes
+there could not explain initial rejections. `scalper_preview_freshness` now
+reports fixed numeric counters, the first blocking component in current policy
+order, and exact signed component ages in microseconds. Negative ages remain
+future timestamps. Old LAST is informational; current policy permits old LAST
+when executable BID/ASK are current, but rejects future LAST. BID/ASK older than
+five seconds or future remain rejected. A future component blocks the existing
+stale-preview refresh path; this patch measures that condition without changing
+it or issuing another provider request. Initial policy rejection samples are
+not executions, fills or independently confirmed quotes.
+
+No symbols, prices, provider rows, account details or model reasons are exported
+in this added summary. The hook returns no replacement assessment and does not
+alter provider timestamps, result objects, settings or order admission. Existing
+native-quote observer records still require authoritative confirmation, so a
+Scalper stopped at the initial policy gate may have diagnostic samples but zero
+Grok context records. This instrumentation does not manufacture coverage.
+
+Compare signed provider ages with an independent workstation clock check.
+A stable wall/monotonic interval proves absence of clock jumps during capture,
+not absolute UTC accuracy. Source timestamp semantics or a stable host/provider
+offset remain separate possibilities until measured. Do not relax future/stale
+limits or adjust provider timestamps to obtain passing results. The observed
+Grok latency is a separate issue from upstream quote admission.

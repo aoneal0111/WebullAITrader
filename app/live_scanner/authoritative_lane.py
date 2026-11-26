@@ -37,6 +37,7 @@ class AuthoritativeEventLane:
         self._high_water = 0
         self._enqueued = 0
         self._dequeued = 0
+        self._abandoned = 0
         self._overflow = 0
         self._failure: BaseException | None = None
         self._ages_ms: deque[float] = deque(maxlen=2048)
@@ -77,8 +78,7 @@ class AuthoritativeEventLane:
                 ) from self._failure
             if not self._accepting:
                 raise RuntimeError("authoritative lane is stopped")
-        item = (monotonic(), event)
-        with self._lock:
+            item = (monotonic(), event)
             if self._depth >= self.capacity:
                 self._overflow += 1
                 raise AuthoritativeLaneOverflow(
@@ -96,53 +96,45 @@ class AuthoritativeEventLane:
             self._enqueued += 1
 
     def stop(self, *, timeout: float = 5.0) -> None:
+        deadline = monotonic() + max(0.0, timeout)
         with self._lock:
             self._accepting = False
             started = self._started
+            thread = self._thread
         if not started:
             return
-        with self._lock:
-            failed = self._failure is not None
-            thread = self._thread
-        # A failed or previously joined worker cannot acknowledge any queued
-        # work.  Release only the abandoned tail and return; queue.join() here
-        # would otherwise make repeated runtime shutdown hang forever.
-        if thread is None or not thread.is_alive():
-            with self._lock:
-                abandoned = self._depth > 0
-                if abandoned and self._failure is None:
-                    self._failure = RuntimeError(
-                        "authoritative lane worker stopped before drain"
-                    )
-            while True:
+        # Queue.join() cannot time out. An observer can fail after stop starts,
+        # leaving an unacknowledged tail forever. A FIFO sentinel drains healthy
+        # workers; a failed worker is joined before its abandoned tail is counted.
+        if thread is not None and thread.is_alive():
+            while thread.is_alive() and not self.failed:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("authoritative lane shutdown timed out")
                 try:
-                    self._queue.get_nowait()
-                except Exception:
+                    self._queue.put(None, timeout=min(remaining, 0.05))
                     break
-                else:
-                    self._queue.task_done()
-            with self._lock:
-                self._depth = 0
-            return
-        if failed:
-            # The worker has stopped at the failing event.  Account for the
-            # unreconciled tail explicitly so shutdown cannot hang forever;
-            # the failure remains visible in metrics and the caller receives
-            # a fail-safe error from the next publish.
-            while True:
-                try:
-                    self._queue.get_nowait()
-                except Exception:
-                    break
-                else:
-                    self._queue.task_done()
-        self._queue.join()
-        self._stop.set()
-        self._queue.put(None)
-        if thread is not None:
-            thread.join(timeout)
+                except Full:
+                    continue
+            thread.join(max(0.0, deadline - monotonic()))
             if thread.is_alive():
                 raise RuntimeError("authoritative lane shutdown timed out")
+        self._stop.set()
+        abandoned = 0
+        from queue import Empty
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except Empty:
+                break
+            else:
+                abandoned += item is not None
+                self._queue.task_done()
+        with self._lock:
+            self._abandoned += abandoned
+            self._depth = 0
+            if abandoned and self._failure is None:
+                self._failure = RuntimeError("authoritative lane worker stopped before drain")
 
     def metrics(self) -> dict[str, object]:
         with self._lock:
@@ -153,6 +145,7 @@ class AuthoritativeEventLane:
                 "authoritative_lane_capacity": self.capacity,
                 "authoritative_events_enqueued": self._enqueued,
                 "authoritative_events_dequeued": self._dequeued,
+                "authoritative_events_abandoned": self._abandoned,
                 "authoritative_lane_overflow": self._overflow,
                 "authoritative_oldest_age_ms": max(ages, default=0.0),
                 "authoritative_lane_failure": (

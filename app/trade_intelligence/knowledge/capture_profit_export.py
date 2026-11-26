@@ -3,43 +3,20 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
 import sqlite3
-import time
 import zipfile
 
 from .capture_profit_audit import audit_capture, instant, order_key
+from app.read_only_sqlite import read_database, bounded_rows
 
 CONTEXT_TYPES = (
     "DECISION", "DI_ENTRY_DIAGNOSTIC", "EXECUTION_GATE_DECISION",
     "SETUP_LIFECYCLE", "STATE_TRANSITION", "SPREAD_EVIDENCE", "DATA_QUALITY",
 )
-
-
-@contextmanager
-def read_database(path):
-    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    try:
-        deadline = time.monotonic() + 10
-        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-        db.execute("PRAGMA query_only=ON")
-        yield db
-    finally:
-        db.close()
-
-
-def bounded_rows(db, query, args, limit, byte_limit):
-    rows, size = [], 0
-    for row in db.execute(query, args):
-        size += sum(len(str(v).encode("utf-8")) for v in row)
-        if len(rows) >= limit or size > byte_limit:
-            raise ValueError("DATABASE_RESULT_LIMIT")
-        rows.append(row)
-    return rows
 
 
 def export_batch(root, run_start, *, offset=0, limit=5, output_parent=None):

@@ -263,3 +263,44 @@ def test_final_artifact_contains_original_shutdown_provenance(tmp_path: Path) ->
     assert artifact["shutdown"]["shutdown_operator_initiated"] is True
     assert artifact["shutdown"]["shutdown_runtime_session_id"]
     assert len(artifact["shutdown"]["events"]) <= 32
+
+
+def test_cleanup_failure_keeps_operator_origin_and_retains_exception():
+    diagnostics = PerformanceDiagnostics()
+    session = diagnostics.begin_runtime_session()
+    assert diagnostics.record_shutdown_request(
+        origin=ShutdownOrigin.OPERATOR_STOP, reason=ShutdownReason.OPERATOR_REQUESTED,
+        component='gui.stop_button', stop_event_already_set=False,
+        failure_present=False, operator_initiated=True, runtime_session_id=session)
+    assert not diagnostics.record_shutdown_request(
+        origin=ShutdownOrigin.BACKGROUND_TASK_FAILURE,
+        reason=ShutdownReason.BACKGROUND_TASK_TERMINATED,
+        component='runtime_driver', stop_event_already_set=True,
+        failure_present=True, operator_initiated=False, runtime_session_id=session,
+        exception_class='ReportWorkerShutdownPending')
+    result = diagnostics.shutdown_metrics()
+    assert result['shutdown_origin'] == 'OPERATOR_STOP'
+    assert result['shutdown_component'] == 'gui.stop_button'
+    assert result['shutdown_operator_initiated'] is True
+    assert result['shutdown_failure_present'] is True
+    assert result['shutdown_exception_class'] == 'ReportWorkerShutdownPending'
+    assert result['events'][-1]['event_type'] == 'RUNTIME_CLEANUP_FAILED'
+
+
+def test_foreign_session_failure_does_not_change_active_operator_stop():
+    diagnostics = PerformanceDiagnostics()
+    session = diagnostics.begin_runtime_session()
+    diagnostics.record_shutdown_request(
+        origin=ShutdownOrigin.OPERATOR_STOP, reason=ShutdownReason.OPERATOR_REQUESTED,
+        component='gui.stop_button', stop_event_already_set=False,
+        failure_present=False, operator_initiated=True, runtime_session_id=session)
+    diagnostics.record_shutdown_request(
+        origin=ShutdownOrigin.BACKGROUND_TASK_FAILURE,
+        reason=ShutdownReason.BACKGROUND_TASK_TERMINATED,
+        component='retired_driver', stop_event_already_set=True,
+        failure_present=True, operator_initiated=False, runtime_session_id='retired',
+        exception_class='RetiredFailure')
+    state = diagnostics.shutdown_metrics()
+    assert state['shutdown_failure_present'] is False
+    assert state['shutdown_exception_class'] is None
+    assert len(state['events']) == 1

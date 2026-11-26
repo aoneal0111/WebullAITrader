@@ -1,0 +1,171 @@
+{
+  "review_date": "2026-10-25",
+  "atlas_reviewed_commit": "0aa83d8addbec2c3ab3ec9d131d55ed1dde00550",
+  "scope": "PUBLIC_SOURCE_REVIEW_NOT_INSTALLATION_OR_TRADING",
+  "repositories": [
+    {
+      "repository": "freqtrade/freqtrade",
+      "reviewed_commit": "150a10bc2b2c49959975693fafd668f7fb37de7d",
+      "commit_date": "2026-10-25T09:20:06Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "3d1a903ce1c76f32e5d3e7fc12f0e5c4845f2308",
+          "url": "https://github.com/freqtrade/freqtrade/blob/150a10bc2b2c49959975693fafd668f7fb37de7d/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc",
+          "url": "https://github.com/freqtrade/freqtrade/blob/150a10bc2b2c49959975693fafd668f7fb37de7d/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "jesse-ai/jesse",
+      "reviewed_commit": "e26778ee45d175f8461c1c1d3b71823569f12274",
+      "commit_date": "2026-10-25T15:20:24Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "bcdc01bb4af72891f939bd8390eb71cc76a5c76b",
+          "url": "https://github.com/jesse-ai/jesse/blob/e26778ee45d175f8461c1c1d3b71823569f12274/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "436d9edffaf3dbcb9099c02d82370a21a130da46",
+          "url": "https://github.com/jesse-ai/jesse/blob/e26778ee45d175f8461c1c1d3b71823569f12274/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "hummingbot/hummingbot",
+      "reviewed_commit": "9af100d6822da7d2d0291a906c730ef172284ee2",
+      "commit_date": "2026-09-22T08:53:54Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "20dadd44364c91a25448716ebb92e142797794da",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "e998fcfee5d9d1ba105679b6a755d10fa68cdc97",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "iterativv/NostalgiaForInfinity",
+      "reviewed_commit": "9c4f33c7c525f86a3efa70d7296d6f16c68bb2e8",
+      "commit_date": "2026-10-25T15:35:49Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "42d71404b39689d392170b387ff51aaedf1c3b8c",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/9c4f33c7c525f86a3efa70d7296d6f16c68bb2e8/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "f288702d2fa16d3cdf0035b15a9fcbc552cd88e7",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/9c4f33c7c525f86a3efa70d7296d6f16c68bb2e8/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "enarjord/passivbot",
+      "reviewed_commit": "772abadc10a5bbf258a84aa8209a9084699fa1bd",
+      "commit_date": "2026-10-18T12:49:14Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "b1c53234cd233e418892a421b00854899bc96f65",
+          "url": "https://github.com/enarjord/passivbot/blob/772abadc10a5bbf258a84aa8209a9084699fa1bd/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "fdddb29aa445bf3d6a5d843d6dd77e10a9f99657",
+          "url": "https://github.com/enarjord/passivbot/blob/772abadc10a5bbf258a84aa8209a9084699fa1bd/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "Drakkar-Software/OctoBot",
+      "reviewed_commit": "c45fdc2c95c5bd3d649251fa90c327e2e8f86b00",
+      "commit_date": "2026-10-07T08:50:21Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "406f44d0d6805507a9dd43c073a0d621f7a659d4",
+          "url": "https://github.com/Drakkar-Software/OctoBot/blob/c45fdc2c95c5bd3d649251fa90c327e2e8f86b00/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "e72bfddabc15be5718a7cc061ac10e47741d8219",
+          "url": "https://github.com/Drakkar-Software/OctoBot/blob/c45fdc2c95c5bd3d649251fa90c327e2e8f86b00/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "freqtrade/freqtrade-strategies",
+      "reviewed_commit": "f3340ce11f5bdf62f598522e64d1f5638eaa13f5",
+      "commit_date": "2026-09-08T16:42:47Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "e6be550be6fa7389494e90693d57b036c7fdb245",
+          "url": "https://github.com/freqtrade/freqtrade-strategies/blob/f3340ce11f5bdf62f598522e64d1f5638eaa13f5/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "94a9ed024d3859793618152ea559a168bbcbb5e2",
+          "url": "https://github.com/freqtrade/freqtrade-strategies/blob/f3340ce11f5bdf62f598522e64d1f5638eaa13f5/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    },
+    {
+      "repository": "jesse-ai/example-strategies",
+      "reviewed_commit": "7c91e0a37bf62165790120d730442e4f6eb00364",
+      "commit_date": "2024-03-21T10:22:48Z",
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "5abe3c67397a0544aceb7d497d76227618c39063",
+          "url": "https://github.com/jesse-ai/example-strategies/blob/7c91e0a37bf62165790120d730442e4f6eb00364/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "blob_sha": "fcc62619e5848a83a1b05b5326019b291bfee292",
+          "url": "https://github.com/jesse-ai/example-strategies/blob/7c91e0a37bf62165790120d730442e4f6eb00364/LICENSE"
+        }
+      ],
+      "atlas_dependency_installed": false,
+      "framework_executed": false,
+      "verified_atlas_profitability": false
+    }
+  ],
+  "meaning_of_installed_field": "Not declared in the reviewed Atlas dependency manifests or imported by its desktop execution composition; user-machine packages were not inventoried.",
+  "orders": 0,
+  "grok_requests": 0,
+  "baseline_modified": false
+}

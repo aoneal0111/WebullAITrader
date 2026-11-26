@@ -227,12 +227,12 @@ class PaperOrderGateway:
         order = request.order
         with self._mutation():
             self._require_durability()
-            if (
-                order.side.value == "SELL"
-                and self._position_quantity_source is not None
-                and order.quantity
-                > self._position_quantity_source(order.symbol)
-            ):
+            from app.paper_trading.owned_quantity import scalper_open_quantity
+            proven = (scalper_open_quantity(self._order_book.history(), order.symbol, order.strategy_lifecycle_id)
+                if order.side.value == "SELL" else None)
+            available = (proven if proven is not None else
+                self._position_quantity_source(order.symbol) if order.side.value == "SELL" and self._position_quantity_source is not None else None)
+            if order.side.value == "SELL" and available is not None and order.quantity > available:
                 message = (
                     "paper sell quantity exceeds the projected long position"
                 )
@@ -537,6 +537,157 @@ class PaperOrderGateway:
                 "source": "paper_order_gateway",
             },
         )
+
+    def stage_correlated_target_with_stop(
+        self,
+        stop_order_id: str,
+        target_request: OrderPlacementRequest,
+        stop_price: Decimal,
+    ) -> BrokerOrderAcknowledgement:
+        """Atomically stage a PAPER target and upgrade its existing STOP.
+
+        This transaction is intentionally not a generic placement API. Both
+        order states and their events are committed together before any
+        in-memory order mutation or externally visible event. A rejected
+        validation leaves the existing STOP unchanged.
+        """
+        if not isinstance(target_request, OrderPlacementRequest):
+            raise TypeError("target_request must be OrderPlacementRequest")
+        target = target_request.order
+
+        def refuse(reason: str) -> BrokerOrderAcknowledgement:
+            return BrokerOrderAcknowledgement(
+                client_order_id=target.client_order_id,
+                broker_order_id="",
+                accepted=False,
+                status=NormalizedOrderStatus.REJECTED,
+                message=reason,
+                metadata={"source": "paper_order_gateway"},
+            )
+
+        with self._mutation():
+            self._require_durability()
+            try:
+                stop = self._order_book.get(stop_order_id)
+            except OrderNotFoundError:
+                return refuse("working protective STOP not found")
+            if (
+                stop.is_terminal
+                or stop.side is not PaperOrderSide.SELL
+                or stop.request.order_type is not PaperOrderType.STOP
+                or stop.request.stop_price is None
+                or stop.request.metadata.get("stop_triggered") is True
+                or stop.request.metadata.get("reservation_mode") == "CONTINGENT_OCO"
+                or target.side.value != "SELL"
+                or target.order_type.value not in {"LIMIT", "MARKET"}
+                or (target.order_type.value == "LIMIT" and target.limit_price is None)
+                or target.time_in_force.value != "GTC"
+                or (
+                    self._durable_store is not None
+                    and target.account_id != self._durable_store.account_id
+                )
+                or target.symbol != stop.symbol
+                or not stop.request.strategy_lifecycle_id
+                or target.strategy_lifecycle_id != stop.request.strategy_lifecycle_id
+                or target.quantity <= 0
+                or target.quantity > stop.remaining_quantity
+                or not stop_price.is_finite()
+                or stop_price < stop.request.stop_price
+                or stop.remaining_quantity != self._long_position_quantity(stop.symbol)
+                or self._order_book.contains(target.client_order_id)
+            ):
+                return refuse("correlated target/STOP prerequisites not met")
+            open_sells = tuple(
+                order for order in self._order_book.open_orders_for_symbol(stop.symbol)
+                if order.side is PaperOrderSide.SELL
+                and order.request.strategy_lifecycle_id == stop.request.strategy_lifecycle_id
+            )
+            if len(open_sells) != 1 or open_sells[0].order_id != stop.order_id:
+                return refuse("another exit order already owns this lifecycle")
+            if any(
+                order.request.client_order_id == target.client_order_id
+                for order in self._order_book.history()
+            ):
+                return refuse("duplicate target client order ID")
+
+            now = self._now()
+            target_order = accept_order(create_order(
+                PaperOrderRequest(
+                    symbol=target.symbol,
+                    asset_class=AssetClass.STOCK,
+                    side=PaperOrderSide.SELL,
+                    order_type=PaperOrderType(target.order_type.value),
+                    quantity=target.quantity,
+                    time_in_force=PaperTimeInForce(target.time_in_force.value),
+                    limit_price=target.limit_price,
+                    stop_price=None,
+                    client_order_id=target.client_order_id,
+                    strategy_lifecycle_id=target.strategy_lifecycle_id,
+                    structural_stop_price=_structural_stop_from_placement(target),
+                    execution_reason=_execution_reason_from_placement(target),
+                    metadata=dict(target.metadata),
+                ),
+                clock=lambda: now,
+            ), at=now)
+            if self._order_book.contains(target_order.order_id):
+                return refuse("duplicate target order ID")
+            updated_stop = replace(
+                stop, updated_at=max(now, stop.updated_at),
+                request=replace(
+                    stop.request,
+                    stop_price=Decimal(stop_price),
+                    metadata={
+                        **stop.request.metadata,
+                        "reservation_mode": "CONTINGENT_OCO",
+                        "correlated_target_order_id": target_order.order_id,
+                    },
+                ),
+            )
+            accepted = self._order_event(
+                target_order, event_type="ORDER_ACCEPTED",
+                message="Atomic PAPER correlated target accepted.",
+            )
+            working = self._order_event(
+                target_order, event_type="ORDER_WORKING",
+                message="Atomic PAPER correlated target is working.",
+                status="WORKING",
+            )
+            amended = self._order_event(
+                updated_stop, event_type="ORDER_UPDATED",
+                message="Existing STOP atomically correlated to PAPER target.",
+            )
+            if self._durable_store is not None:
+                try:
+                    self._durable_store.persist_batch(
+                        (accepted, working, amended),
+                        orders=(target_order, updated_stop),
+                    )
+                except Exception as exc:
+                    self._mark_durability_failed(exc, stop.symbol)
+                    raise PaperDurabilityError(
+                        "atomic PAPER bracket persistence failed; PAPER is disabled"
+                    ) from exc
+            try:
+                self._order_book.submit(target_order)
+                self._order_book.update(updated_stop)
+            except Exception as exc:
+                # An unexpected in-memory mutation failure after durable
+                # commit cannot be safely retried. Disable PAPER until its
+                # authoritative orders have been reloaded and reconciled.
+                self._mark_durability_failed(exc, stop.symbol)
+                raise PaperDurabilityError(
+                    "atomic PAPER bracket adoption failed; PAPER is disabled"
+                ) from exc
+            for event in (accepted, working, amended):
+                self._emit_event(event)
+            return BrokerOrderAcknowledgement(
+                client_order_id=target.client_order_id,
+                broker_order_id=target_order.order_id,
+                accepted=True,
+                status=NormalizedOrderStatus.SUBMITTED,
+                message="atomic PAPER target and existing STOP committed",
+                metadata={"source": "paper_order_gateway"},
+            )
 
     def amend_protective_stop(
         self, order_id: str, remaining: int, price: Decimal,
@@ -1050,6 +1201,7 @@ class PaperOrderGateway:
                 order.side is not PaperOrderSide.BUY
                 or stop is None
                 or quote.ask_price > stop
+                or quote.timestamp < order.updated_at
             ):
                 continue
             cancelled = transition_cancel_order(
@@ -1537,6 +1689,12 @@ def _entry_valid_until_from_placement(
     """Persist the authorization-time validity supplied by Warrior PAPER."""
 
     metadata = getattr(order, "metadata", {})
+    scalp_deadline = None
+    if (metadata.get("source") == "autonomous-paper"
+            and str(getattr(order, "strategy_lifecycle_id", "")).startswith("QUICK_SCALPER|")
+            and getattr(getattr(order, "side", None), "value", None) == "BUY"):
+        from app.market.scalp_session import scalp_entry_deadline
+        scalp_deadline = scalp_entry_deadline(created_at, metadata)
     deadline = metadata.get("chase_deadline")
     if deadline is not None:
         try:
@@ -1544,17 +1702,18 @@ def _entry_valid_until_from_placement(
         except (TypeError, ValueError):
             parsed = None
         if parsed is not None and parsed.tzinfo is not None:
-            return parsed
+            return min(parsed, scalp_deadline) if scalp_deadline is not None else parsed
     if metadata.get("source") != "autonomous-paper":
         return None
     value = metadata.get("entry_validity_seconds")
     try:
         seconds = Decimal(str(value))
     except Exception:
-        return None
+        return scalp_deadline
     if not seconds.is_finite() or seconds <= 0:
-        return None
-    return created_at + timedelta(seconds=float(seconds))
+        return scalp_deadline
+    expiry = created_at + timedelta(seconds=float(seconds))
+    return min(expiry, scalp_deadline) if scalp_deadline is not None else expiry
 
 
 def _cancellation_reason(
@@ -1565,6 +1724,8 @@ def _cancellation_reason(
         return OrderTerminalReason.PROTECTIVE_REPLACED
     if source == "autonomous-paper-entry-replace":
         return OrderTerminalReason.ENTRY_REPLACED
+    if source == "autonomous-paper-correlated-exit":
+        return OrderTerminalReason.SYSTEM_CANCELLED
     return OrderTerminalReason.OPERATOR_CANCELLED
 
 

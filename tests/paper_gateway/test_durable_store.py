@@ -930,3 +930,70 @@ def test_projected_entry_structural_stop_survives_durable_event_replay(tmp_path)
         assert next(e for e in replayed if e.fill is not None).order.structural_stop_price == "9.5"
     finally:
         second.close()
+
+
+def test_atomic_target_and_existing_stop_durable_restart_and_partial_target_fill(tmp_path):
+    from app.services.order_command_factory import OrderEntryCommand
+    path = tmp_path / "atomic-bracket.sqlite3"
+    first = create_paper_trading_command_composition(
+        persistence_path=str(path),
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        first.trading_service, first.order_command_factory,
+        order_book=first.order_book,
+    )
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        first.gateway.process_market_event(quote(1, "9.99", "10"))
+        assert bridge.submit_exit("PMI", 100, Decimal("9.50"), "STOP")
+        original_stop = next(
+            x for x in first.order_book.open_orders()
+            if x.request.order_type.value == "STOP"
+        )
+        target_request = first.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="PMI", side="SELL", quantity=Decimal("50"),
+                order_type="LIMIT", limit_price=Decimal("10.50"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id="trade-a",
+                metadata={"reason": "FIRST_TARGET"},
+            ),
+        )
+        placed = first.gateway.stage_correlated_target_with_stop(
+            original_stop.order_id, target_request, Decimal("9.50"),
+        )
+        assert placed.accepted
+        stop = first.order_book.get(original_stop.order_id)
+        assert stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert stop.request.metadata["correlated_target_order_id"] == placed.broker_order_id
+    finally:
+        first.close()
+
+    second = create_paper_trading_command_composition(
+        persistence_path=str(path),
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    try:
+        stop = second.order_book.get(original_stop.order_id)
+        target = second.order_book.get(placed.broker_order_id)
+        assert not stop.is_terminal and not target.is_terminal
+        assert stop.remaining_quantity == Decimal("100")
+        assert target.remaining_quantity == Decimal("50")
+        assert stop.request.metadata["correlated_target_order_id"] == target.order_id
+
+        second.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "test",
+            MarketEventType.QUOTE,
+            QuotePayload(Decimal("10.50"), Decimal("10.51"),
+                         Decimal("20"), Decimal("20")),
+        ))
+        stop = second.order_book.get(original_stop.order_id)
+        target = second.order_book.get(placed.broker_order_id)
+        assert target.remaining_quantity == Decimal("30")
+        assert stop.remaining_quantity == Decimal("80")
+        second.gateway.process_market_event(quote(3, "10.50", "10.51"))
+        stop = second.order_book.get(original_stop.order_id)
+        assert stop.remaining_quantity == Decimal("50")
+    finally:
+        second.close()

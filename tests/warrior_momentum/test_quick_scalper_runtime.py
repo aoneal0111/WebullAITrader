@@ -1228,12 +1228,15 @@ def test_partial_fill_reconciliation_protects_actual_quantity_and_releases():
         StrategyOwner.QUICK_SCALPER, "life",
     )
 
-    book.update(paper_order(
+    book.update(replace(paper_order(
         order_id="entry", side=OrderSide.BUY, quantity="100", filled="40",
         status=OrderStatus.PARTIALLY_FILLED, reason="ENTRY",
-    ))
+    ), average_fill_price=D("5.10")))
     runtime.reconcile("FAST")
     assert [item[1] for item in bridge.exits[-2:]] == [40, 40]
+    # An increased partial-fill average must alter current R/exit decisions,
+    # even for the ordinary non-cent-profile Quick Scalper.
+    assert runtime._positions["FAST"].entry_price == D("5.10")
 
 
 def test_restart_reconstruction_ignores_warrior_and_restores_scalper_owner():
@@ -1552,3 +1555,281 @@ def test_stale_preview_disabled_live_and_nonpaper_modes_request_no_quote():
 
         assert quotes.calls == 0
         assert bridge.entries == []
+
+
+@pytest.mark.parametrize("stage", ("initial", "reconfirm"))
+@pytest.mark.parametrize(
+    ("reason", "suffix"),
+    (
+        ("INSUFFICIENT_NET_EXECUTABLE_EDGE", "insufficient_edge"),
+        ("CENT_TARGET_ECONOMICS_WAIT", "insufficient_edge"),
+        ("CENT_SUPPORT_FORMING", "insufficient_edge"),
+        ("PROVIDER_DATA_STALE", "provider_data_stale"),
+        ("INVALID_EXECUTION_QUOTE", "invalid_execution_quote"),
+        ("SESSION_NOT_ALLOWED", "session_not_allowed"),
+        ("PRICE_NOT_ELIGIBLE", "price_not_eligible"),
+        ("RISK_NOT_AUTHORIZED", "risk_not_authorized"),
+        ("SOMETHING_ELSE", "other"),
+        (None, "other"),
+    ),
+)
+def test_initial_and_reconfirmation_diagnostics_keep_original_metric_names(
+    monkeypatch, stage, reason, suffix,
+):
+    emitted = []
+    monkeypatch.setattr(performance_diagnostics, "increment", emitted.append)
+    callback = (
+        QuickScalperPaperRuntimeAdapter._increment_initial_reason
+        if stage == "initial"
+        else QuickScalperPaperRuntimeAdapter._increment_reconfirm_reason
+    )
+    callback(reason)
+    assert emitted == [f"quick_scalper_{stage}_{suffix}"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_event"),
+    (
+        (ScalpDecision.EXECUTABLE, "SCALP_EXECUTABLE"),
+        (ScalpDecision.WAIT, "SCALP_EXECUTION_WAIT"),
+        (ScalpDecision.REJECTED_HARD_SAFETY, "SCALP_REJECTED"),
+    ),
+)
+def test_shared_preview_event_preserves_decision_reason_and_generation(
+    decision, expected_event,
+):
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    runtime._emit_preview_decision(
+        SimpleNamespace(symbol="FAST", generation_id="g-preview"),
+        SimpleNamespace(decision=decision, reason="TEST_REASON"),
+    )
+    assert events == [(
+        expected_event,
+        {
+            "symbol": "FAST", "strategy_owner": "QUICK_SCALPER",
+            "generation": "g-preview", "reason": "TEST_REASON",
+        },
+    )]
+
+
+def test_stream_preview_event_precedes_any_authorization():
+    events = []
+    runtime, bridge, quotes = adapter(events=events)
+    runtime.observe_stream_event(
+        stream_observation("4.75", -10),
+        decision_at=NOW, session="REGULAR", execution_permitted=False,
+    )
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.99", 0), decision_at=NOW,
+        session="REGULAR", execution_permitted=True,
+    )
+    assert assessed is not None
+    names = [name for name, _ in events]
+    assert names.index("SCALP_ARMED") < names.index(
+        "SCALP_EXECUTABLE" if assessed.decision is ScalpDecision.EXECUTABLE
+        else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
+        else "SCALP_REJECTED"
+    )
+    # The stream path is allowed to authorize once after the preview;
+    # the refactor must not introduce duplicate quote requests.
+    assert quotes.calls <= 1
+    if "SCALP_ORDER_INTENT" in names:
+        assert names.index(
+            "SCALP_EXECUTABLE" if assessed.decision is ScalpDecision.EXECUTABLE
+            else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
+            else "SCALP_REJECTED"
+        ) < names.index("SCALP_ORDER_INTENT")
+
+
+def test_generation_supersession_emits_exactly_one_event_for_changed_generation():
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    first = SimpleNamespace(symbol="FAST", generation_id="g-first")
+    second = SimpleNamespace(symbol="FAST", generation_id="g-second")
+    runtime._record_generation(first)
+    runtime._record_generation(first)
+    assert events == []
+    runtime._record_generation(second)
+    assert events == [(
+        "SCALP_INVALIDATED",
+        {
+            "symbol": "FAST", "strategy_owner": "QUICK_SCALPER",
+            "generation": "g-first", "reason": "SETUP_SUPERSEDED",
+        },
+    )]
+    assert runtime._current_generation["FAST"] == "g-second"
+    runtime._record_generation(second)
+    assert len(events) == 1
+
+
+def test_generation_supersession_is_symbol_isolated():
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    runtime._record_generation(SimpleNamespace(symbol="FAST", generation_id="g1"))
+    runtime._record_generation(SimpleNamespace(symbol="OTHER", generation_id="g2"))
+    assert events == []
+    assert runtime._current_generation == {"FAST": "g1", "OTHER": "g2"}
+
+
+def test_registration_preserves_bar_snapshot_retention_and_event_order(monkeypatch):
+    monkeypatch.setattr(
+        "app.strategies.warrior_momentum.quick_scalper_runtime._MAX_STREAM_SYMBOLS", 1,
+    )
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    for index in range(3):
+        runtime._register_opportunity(
+            SimpleNamespace(symbol=f"S{index}", generation_id=f"g{index}"),
+            bounded_stream=False,
+        )
+    assert list(runtime._snapshots) == [
+        ("S0", "g0"), ("S1", "g1"), ("S2", "g2"),
+    ]
+    assert [name for name, _ in events] == ["SCALP_OPPORTUNITY"] * 3
+    assert [payload["generation"] for _, payload in events] == [
+        "g0", "g1", "g2",
+    ]
+
+
+def test_registration_preserves_bounded_stream_snapshot_lru(monkeypatch):
+    monkeypatch.setattr(
+        "app.strategies.warrior_momentum.quick_scalper_runtime._MAX_STREAM_SYMBOLS", 1,
+    )
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    for symbol in ("S0", "S1", "S0", "S2"):
+        runtime._register_opportunity(
+            SimpleNamespace(symbol=symbol, generation_id="g1"),
+            bounded_stream=True,
+        )
+    assert list(runtime._snapshots) == [("S0", "g1"), ("S2", "g1")]
+    assert len(events) == 4
+    assert all(name == "SCALP_OPPORTUNITY" for name, _ in events)
+
+
+def test_bar_runtime_assesses_identical_snapshot_once_before_authorization(monkeypatch):
+    events = []
+    runtime, bridge, quotes = adapter(events=events)
+    value = snapshot()
+    runtime._snapshot = lambda _point, _candidate: value
+    calls = []
+    original = runtime.scalper.policy.assess
+
+    def counted(candidate):
+        calls.append(candidate)
+        return original(candidate)
+
+    monkeypatch.setattr(runtime.scalper.policy, "assess", counted)
+    assessed = runtime.observe(
+        SimpleNamespace(
+            observation=SimpleNamespace(bid=None, quote_timestamp=None),
+            evaluation_timestamp=NOW, quote_observed_at=None,
+        ),
+        SimpleNamespace(symbol="FAST"),
+    )
+    # The preview is assessed once, then the authoritative execution quote
+    # is independently re-assessed. Do not remove that safety confirmation.
+    assert len(calls) == 2
+    assert calls[0] is value
+    assert calls[1] is not value
+    assert calls[1].symbol == value.symbol
+    assert assessed is not None
+    assert any(event == "SCALP_ARMED" for event, _ in events)
+    assert quotes.calls == 1
+
+
+def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypatch):
+    runtime, bridge, quotes = adapter()
+    calls = []
+    original = runtime.scalper.policy.assess
+
+    def counted(candidate):
+        calls.append(candidate)
+        return original(candidate)
+
+    monkeypatch.setattr(runtime.scalper.policy, "assess", counted)
+    runtime.observe_stream_event(
+        stream_observation("4.75", -10),
+        decision_at=NOW, session="REGULAR", execution_permitted=False,
+    )
+    assert calls == []
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.99", 0),
+        decision_at=NOW, session="REGULAR",
+    )
+    assert assessed is not None
+    # One initial preview plus one separate canonical quote confirmation.
+    assert len(calls) == 2
+    assert calls[0].symbol == "FAST"
+    assert calls[1].symbol == "FAST"
+    assert calls[0] is not calls[1]
+    assert quotes.calls == 1
+
+
+def test_current_stop_ignores_nonprotective_and_foreign_lifecycle_orders(monkeypatch):
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10", filled="10",
+        status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    runtime, _bridge, _quotes = adapter(book=book)
+    state = runtime._positions["FAST"]
+    def order(side, order_type, lifecycle, price):
+        return SimpleNamespace(request=SimpleNamespace(
+            side=side, order_type=order_type,
+            strategy_lifecycle_id=lifecycle, stop_price=D(price),
+        ))
+    monkeypatch.setattr(book, "open_orders_for_symbol", lambda _symbol: [
+        order(OrderSide.SELL, OrderType.STOP, "life", "4.96"),
+        order(OrderSide.BUY, OrderType.STOP, "life", "5.80"),
+        order(OrderSide.SELL, OrderType.STOP_LIMIT, "life", "5.90"),
+        order(OrderSide.SELL, OrderType.STOP, "unrelated-life", "6.00"),
+    ])
+    assert runtime._current_stop(state) == D("4.96")
+
+
+def test_current_stop_falls_back_to_initial_stop_without_owned_protection(monkeypatch):
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10", filled="10",
+        status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    runtime, _bridge, _quotes = adapter(book=book)
+    state = runtime._positions["FAST"]
+    monkeypatch.setattr(book, "open_orders_for_symbol", lambda _symbol: [
+        SimpleNamespace(request=SimpleNamespace(
+            side=OrderSide.BUY, order_type=OrderType.STOP,
+            strategy_lifecycle_id="life", stop_price=D("9.99"),
+        )),
+    ])
+    assert runtime._current_stop(state) == state.initial_stop
+
+
+def test_reconcile_preserves_existing_tightened_scalp_stop_price():
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10",
+        filled="10", status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    book.submit(PaperOrder(
+        "tightened-stop",
+        OrderRequest(
+            "FAST", AssetClass.STOCK, OrderSide.SELL, OrderType.STOP,
+            D("10"), stop_price=D("4.96"),
+            strategy_lifecycle_id="life", execution_reason="STOP",
+            metadata={"strategy_owner": "QUICK_SCALPER"},
+        ),
+        OrderStatus.ACCEPTED, NOW, NOW,
+    ))
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=book, account_context_source=account,
+        position_quantity_source=lambda _symbol: D("10"),
+        execution_quote_source=Quotes(quote()), clock=lambda: NOW,
+    )
+    protective = [item for item in bridge.exits if item[3] == "STOP"]
+    assert protective
+    assert protective[-1][2] == D("4.96")
+    assert runtime._current_stop(runtime._positions["FAST"]) == D("4.96")

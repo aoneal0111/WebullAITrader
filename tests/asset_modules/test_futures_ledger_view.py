@@ -143,15 +143,21 @@ def test_desktop_futures_routes_share_reader_but_never_start_a_market(saved):
         window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.FUTURES))
         app.processEvents()
         positions = window.asset_surface.currentWidget()
-        assert positions.ledger_reader is modules.futures_ledger_reader and positions.content.rowCount()==1
-        window.pages.setCurrentIndex(2); app.processEvents()
-        events = window.asset_surface.currentWidget()
-        assert events.ledger_reader is positions.ledger_reader and events.content.item(0,2).text()=='OPEN'
-        window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.OPTIONS))
-        app.processEvents()
-        assert window.asset_surface.currentWidget().ledger_reader is not positions.ledger_reader
-        assert window.asset_surface.currentWidget().last_ledger_view.status=='UNCONFIGURED'
-        assert window.asset_surface.currentWidget().content.rowCount()==0
+        from time import monotonic, sleep
+        deadline=monotonic()+3
+        while positions.last_report is None and monotonic()<deadline:
+            app.processEvents();positions.poll();sleep(.01)
+        assert positions.reader is modules.futures_ledger_reader
+        assert positions.positions._table.rowCount()==1
+        window.pages.setCurrentIndex(2);app.processEvents()
+        assert window.asset_surface.currentWidget() is positions
+        assert positions.orders._projected_orders==()  # saved events are not working orders
+        window.pages.setCurrentIndex(5);app.processEvents()
+        assert positions.activity._table.rowCount()>0
+        window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.OPTIONS));app.processEvents()
+        other=window.asset_surface.currentWidget()
+        assert other.reader is not positions.reader
+        assert other.positions._table.rowCount()==0
         assert modules.status(AssetType.FUTURES)=='NOT AVAILABLE'
         assert not composition.runtime_service.is_active and ledger.enabled
     finally: window.close(); composition.close()

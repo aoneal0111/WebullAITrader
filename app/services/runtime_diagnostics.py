@@ -5,21 +5,9 @@ from __future__ import annotations
 import logging
 from threading import current_thread, get_ident
 import traceback
-
-
-_SENSITIVE_MARKERS = (
-    "ACCOUNT ID",
-    "ACCOUNT_ID",
-    "ACCOUNT NUMBER",
-    "ACCOUNT_NUMBER",
-    "APP KEY",
-    "APP_KEY",
-    "AUTHORIZATION HEADER",
-    "PASSWORD",
-    "SECRET",
-    "SESSION ID",
-    "SIGNATURE",
-    "TOKEN",
+from app.exception_diagnostics import (
+    _exception_chain_contains_sensitive_text,
+    safe_exception_details,
 )
 
 
@@ -69,18 +57,6 @@ def safe_exception_message(
     return f"{type(error).__name__}: {message}" if include_type else message
 
 
-def _exception_chain_contains_sensitive_text(error: Exception) -> bool:
-    current: BaseException | None = error
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
-        detail = str(current).upper()
-        if any(marker in detail for marker in _SENSITIVE_MARKERS):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
 def _format_traceback(error: Exception, *, redact_message: bool) -> str:
     if not redact_message:
         return "".join(
@@ -99,4 +75,6 @@ def _format_traceback(error: Exception, *, redact_message: bool) -> str:
     )
 
 
-__all__ = ["log_runtime_exception", "safe_exception_message"]
+
+
+__all__ = ["log_runtime_exception", "safe_exception_message", "safe_exception_details"]

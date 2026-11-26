@@ -3,6 +3,7 @@ from __future__ import annotations
 from time import perf_counter
 
 from app.performance_diagnostics import performance_diagnostics
+from app.strategies.warrior_momentum.report_worker import ReportWorkerShutdownPending
 
 
 def _shutdown_stage(name: str, callback):
@@ -134,8 +135,14 @@ def close_desktop_composition(
         "warrior_forward_sidecar",
         None,
     )
+    warrior_stopped = True
     if warrior_forward_sidecar is not None:
-        _shutdown_stage("warrior_sidecar", warrior_forward_sidecar.stop)
+        try:
+            _shutdown_stage("warrior_sidecar", warrior_forward_sidecar.stop)
+        except ReportWorkerShutdownPending:
+            # Continue independent cleanup and the final checkpoint, but do
+            # not report a clean close while a worker still owns its capture.
+            warrior_stopped = False
 
     paper_trading_commands = getattr(
         composition,
@@ -158,6 +165,13 @@ def close_desktop_composition(
             ),
         )
 
+    recorder = getattr(composition, "daily_research", None)
+    if recorder is not None:
+        try:
+            _shutdown_stage("daily_research", recorder.close)
+        except Exception:
+            pass  # Research failure never changes native protective exits.
+
     _shutdown_stage("state_store", composition.state_store.close)
 
     try:
@@ -165,7 +179,8 @@ def close_desktop_composition(
     except Exception:
         pass
 
-    return runtime_stopped and symbol_intelligence_stopped and learning_collector_stopped
+    return (runtime_stopped and symbol_intelligence_stopped
+            and learning_collector_stopped and warrior_stopped)
 
 
 __all__ = ["close_desktop_composition"]

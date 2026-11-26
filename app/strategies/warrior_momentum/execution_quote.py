@@ -29,6 +29,31 @@ class ExecutionQuoteSnapshot:
     confirmed_at: datetime | None = None
 
 
+def execution_quote_rejection(snapshot, symbol, at, *, maximum_age):
+    """Validate each price/timestamp without rewriting provider evidence."""
+    if snapshot is None:
+        return 'QUOTE_REJECTED_MISSING'
+    if not isinstance(snapshot,ExecutionQuoteSnapshot):
+        return 'QUOTE_REJECTED_INVALID'
+    if snapshot.symbol != symbol:
+        return 'QUOTE_REJECTED_SYMBOL_MISMATCH'
+    try:
+        prices = (snapshot.last, snapshot.bid, snapshot.ask)
+        if any(not isinstance(p, Decimal) or not p.is_finite() or p<=0 for p in prices) or snapshot.ask<snapshot.bid:
+            return 'QUOTE_REJECTED_INVALID'
+        for name, stamp in (('BID',snapshot.bid_timestamp),('ASK',snapshot.ask_timestamp),('LAST_TRADE',snapshot.last_timestamp)):
+            if not isinstance(stamp,datetime) or stamp.tzinfo is None:
+                return 'QUOTE_REJECTED_INVALID'
+            age = Decimal(str((at-stamp).total_seconds()))
+            if age<0:
+                return 'QUOTE_REJECTED_'+name+'_FUTURE'
+            if age>maximum_age:
+                return 'QUOTE_REJECTED_'+name+'_STALE'
+    except (TypeError,ValueError,ArithmeticError):
+        return 'QUOTE_REJECTED_INVALID'
+    return None
+
+
 class WebullExecutionQuoteSource:
     """One existing Webull REST snapshot call for one actionable symbol."""
 
@@ -70,7 +95,7 @@ class WebullExecutionQuoteSource:
                 extend_hour_required=True,
             )
             rows = _response_rows(response)
-            row = rows[0] if rows else None
+            row = _symbol_row(normalized, rows)
             returned_at = self._clock()
             context["snapshot_return_timestamp"] = returned_at
             if row is None:
@@ -115,7 +140,7 @@ class WebullExecutionQuoteSource:
                 extend_hour_required=True,
             )
             rows = _response_rows(response)
-            row = rows[0] if rows else None
+            row = _symbol_row(normalized, rows)
             return None if row is None else parse_execution_quote(
                 normalized, row, confirmed_at=self._clock(),
             )
@@ -201,6 +226,9 @@ def parse_execution_quote(symbol: str, row: Mapping[str, object], *,
                           confirmed_at: datetime | None = None) -> ExecutionQuoteSnapshot | None:
     """Accept only prices paired with provider-authored timestamps."""
     try:
+        reported_symbol = _value(row, 'symbol')
+        if reported_symbol is not None and str(reported_symbol).strip().upper() != symbol.strip().upper():
+            return None
         last = _positive(row, "price", "last", "latest_price")
         bid = _positive(row, "bid", "bid_price", "bidPrice", "bid1")
         ask = _positive(row, "ask", "ask_price", "askPrice", "ask1")
@@ -214,6 +242,21 @@ def parse_execution_quote(symbol: str, row: Mapping[str, object], *,
         symbol.strip().upper(), last, bid, ask, last_time, quote_time,
         quote_time, confirmed_at,
     )
+
+
+def _symbol_row(symbol: str, rows: list[Mapping[str, object]]) -> Mapping[str, object] | None:
+    """Never relabel another symbol's prices as the requested instrument.
+
+    Keep the legacy single-row/no-symbol contract, but require explicit unique
+    matching identity for multi-row responses. No timestamp or price merging.
+    """
+    matches = [row for row in rows
+               if str(_value(row, 'symbol') or '').strip().upper() == symbol]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches and len(rows) == 1 and _value(rows[0], 'symbol') is None:
+        return rows[0]
+    return None
 
 
 def _value(row: Mapping[str, object], *names: str) -> object | None:
