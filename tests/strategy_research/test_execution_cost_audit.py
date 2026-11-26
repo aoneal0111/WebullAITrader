@@ -49,6 +49,9 @@ class ExecutionCostAuditTests(unittest.TestCase):
         self.assertEqual(result['decision_reference_matches'],1)
         self.assertEqual(result['matched_signed_midpoint_difference_bps'],D(20))
         self.assertEqual(result['matched_commission_bps'],D(5))
+        self.assertEqual(result['matched_ask_anchor_difference_per_share'],D('0.10'))
+        self.assertEqual(result['matched_recorded_commission_per_share'],D('0.05'))
+        self.assertEqual(result['matched_combined_ask_anchor_and_commission_per_share'],D('0.15'))
         self.assertEqual(result['records'][0]['decision_reference']['half_spread_bps'],D(10))
         self.assertEqual(result['records'][0]['decision_reference']['signed_ask_difference_per_share'],D('.1'))
         self.assertFalse(result['costs_verified']);self.assertFalse(result['execution_authorized'])
@@ -64,6 +67,9 @@ class ExecutionCostAuditTests(unittest.TestCase):
         self.assertEqual(result['fills'],2);self.assertEqual(result['matched_quantity'],D(10))
         self.assertEqual(result['matched_signed_midpoint_difference_bps'],D(8))
         self.assertEqual(result['total_recorded_commission'],D('.75'))
+        self.assertEqual(result['matched_ask_anchor_difference_per_share'],D('-0.02'))
+        self.assertEqual(result['matched_recorded_commission_per_share'],D('.075'))
+        self.assertEqual(result['matched_combined_ask_anchor_and_commission_per_share'],D('.055'))
 
     def test_missing_quotes_and_sell_quotes_are_explicitly_excluded(self):
         for side,meta,reason in [('SELL',order()['request']['metadata'],'NO_SUPPORTED_DECISION_QUOTE'),
@@ -125,6 +131,7 @@ class ExecutionCostAuditTests(unittest.TestCase):
         self.assertEqual(result['fills'],0)
         self.assertEqual(result['status'],'INSUFFICIENT_LIVE_EXECUTION_EVIDENCE')
         self.assertIsNone(result['matched_commission_bps'])
+        self.assertIsNone(result['matched_combined_ask_anchor_and_commission_per_share'])
         with tempfile.TemporaryDirectory() as root:
             path=Path(root)/'ledger.sqlite3';ledger(path,[])
             with contextlib.closing(sqlite3.connect(path)) as db,db:
