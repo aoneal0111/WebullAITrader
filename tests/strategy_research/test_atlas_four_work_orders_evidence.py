@@ -112,3 +112,22 @@ def test_does_not_mutate_inputs():
     original = deepcopy(inputs)
     summarize(*inputs)
     assert inputs == original
+
+
+def test_offline_cli_creates_new_report_and_never_overwrites(tmp_path):
+    import json
+    from app.strategy_research.atlas_four_work_orders_evidence import main
+
+    names = ("ledger", "recording", "entry", "micro")
+    args = []
+    for name, report in zip(names, sources()):
+        path = tmp_path / (name + ".json")
+        path.write_text(json.dumps(report), encoding="utf-8")
+        args.extend(("--" + name, str(path)))
+    output = tmp_path / "four-work-orders.json"
+    main(args + ["--output", str(output)])
+    assert json.loads(output.read_text())["safe_for_live_promotion"] is False
+    original = output.read_bytes()
+    with pytest.raises(SystemExit):
+        main(args + ["--output", str(output)])
+    assert output.read_bytes() == original
