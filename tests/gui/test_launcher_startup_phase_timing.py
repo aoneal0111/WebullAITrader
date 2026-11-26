@@ -22,3 +22,17 @@ def test_startup_phase_is_nonblocking_when_observability_fails(monkeypatch):
     monkeypatch.setattr(app, "monotonic", lambda: 7.0)
     with patch.object(app.logging, "getLogger", side_effect=failure):
         assert app._startup_phase(5.0, "window_show_requested") is None
+
+
+def test_gui_ready_records_only_first_event_loop_stage(monkeypatch):
+    sink = Mock()
+    monkeypatch.setattr(app, "performance_diagnostics", sink)
+    app._record_gui_ready()
+    sink.record_startup_stage.assert_called_once_with("gui_ready")
+
+
+def test_gui_ready_diagnostic_failure_never_blocks_event_loop(monkeypatch):
+    sink = Mock()
+    sink.record_startup_stage.side_effect = RuntimeError("synthetic diagnostic failure")
+    monkeypatch.setattr(app, "performance_diagnostics", sink)
+    assert app._record_gui_ready() is None
